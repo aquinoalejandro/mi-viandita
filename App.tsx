@@ -49,6 +49,7 @@ import {
   RootStackParamList,
 } from "./src/types/types";
 import { STORAGE_KEYS } from "./src/utils/storage";
+import { resolveSharedFileUri } from "./src/utils/sharedBackupFile";
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const MiViandaStack = createNativeStackNavigator<MiViandaStackParamList>();
@@ -158,7 +159,8 @@ type SharedBackupPayload = {
 };
 
 const importarRespaldoDesdeUri = async (uri: string) => {
-  const content = await FileSystem.readAsStringAsync(uri);
+  const readableUri = await resolveSharedFileUri(uri);
+  const content = await FileSystem.readAsStringAsync(readableUri);
   const parsed = JSON.parse(content) as Partial<{
     clientes: Client[];
     eventosCliente: ClientEvent[];

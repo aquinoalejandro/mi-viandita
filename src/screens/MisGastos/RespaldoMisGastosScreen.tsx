@@ -3,13 +3,15 @@ import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native"
 import { Button, Dialog, Divider, Portal, Snackbar, Surface, Text, useTheme } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system";
+import { File, Paths } from "expo-file-system";
+import * as FileSystemLegacy from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 import { useStore } from "../../store/zustand";
 import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
 import type { ExpenseCategory, ExpenseRecord } from "../../types/types";
 import { misGastosDialogStyle } from "./misGastosShared";
+import { resolveSharedFileUri } from "../../utils/sharedBackupFile";
 
 type BackupData = {
   categorias: ExpenseCategory[];
@@ -157,23 +159,14 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
         gastos: expenses,
       };
 
-      const baseDir =
-        (FileSystem as any).cacheDirectory ?? (FileSystem as any).documentDirectory ?? "";
-
-      if (!baseDir) {
-        mostrarMensaje("No se pudo exportar: no hay directorio de archivo disponible.");
-        return;
-      }
-
       const jsonData = JSON.stringify(data, null, 2);
-      const fileUri = `${baseDir}respaldo_mis_gastos.json`;
-
-      await FileSystem.writeAsStringAsync(fileUri, jsonData);
+      const file = new File(Paths.cache, "respaldo_mis_gastos.json");
+      await file.write(jsonData);
 
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(fileUri, {
+        await Sharing.shareAsync(file.uri, {
           mimeType: "application/json",
-          dialogTitle: "Compartir respaldo",
+          dialogTitle: "Compartir respaldo de MisGastos",
           UTI: "public.json",
         });
         mostrarMensaje("Respaldo exportado con éxito.");
@@ -191,6 +184,7 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: "application/json",
+        copyToCacheDirectory: true,
       });
 
       if (res.canceled) {
@@ -204,7 +198,8 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
         return;
       }
 
-      const content = await FileSystem.readAsStringAsync(fileUri);
+      const readableUri = await resolveSharedFileUri(fileUri);
+      const content = await FileSystemLegacy.readAsStringAsync(readableUri);
 
       const data = JSON.parse(content) as Partial<BackupData>;
       const categorias = Array.isArray(data.categorias) ? data.categorias : null;

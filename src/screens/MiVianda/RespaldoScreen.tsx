@@ -2,12 +2,13 @@ import React, { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
 import { Button, Dialog, Portal, Snackbar, Text, useTheme } from "react-native-paper";
 import { File, Paths } from "expo-file-system";
-import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Client, ClientEvent, Holiday, PaymentCycle, Period, ViandaTipo } from "../../types/types";
 import { STORAGE_KEYS } from "../../utils/storage";
+import * as FileSystemLegacy from "expo-file-system/legacy";
+import { resolveSharedFileUri } from "../../utils/sharedBackupFile";
 import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
 import { miViandaDialogStyle } from "./miViandaShared";
 
@@ -151,6 +152,7 @@ export default function RespaldoScreen() {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: "application/json",
+        copyToCacheDirectory: true,
       });
 
       if (res.canceled) {
@@ -158,8 +160,14 @@ export default function RespaldoScreen() {
         return;
       }
 
-      const fileUri = res.assets[0].uri;
-      const content = await FileSystem.readAsStringAsync(fileUri);
+      const fileUri = res.assets[0]?.uri;
+      if (!fileUri) {
+        mostrarMensaje("No se encontró el archivo seleccionado.");
+        return;
+      }
+
+      const readableUri = await resolveSharedFileUri(fileUri);
+      const content = await FileSystemLegacy.readAsStringAsync(readableUri);
 
       const parsed = JSON.parse(content) as Partial<BackupData>;
 
