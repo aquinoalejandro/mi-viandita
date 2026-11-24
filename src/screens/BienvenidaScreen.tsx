@@ -7,6 +7,7 @@ import { Surface, Text, useTheme } from "react-native-paper";
 import { ArrowRight, UtensilsCrossed, Wallet } from "lucide-react-native";
 
 import type { RootStackParamList } from "../types/types";
+import { miViandaPalette, misGastosPalette } from "../theme/appTheme";
 import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../theme/layout";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, "Bienvenida">;
@@ -66,37 +67,27 @@ export default function BienvenidaScreen() {
         cardsList: {
           gap: 12,
         },
-        moduleCardPrimary: {
+        moduleCardVianda: {
           flexDirection: "row",
           alignItems: "center",
           gap: 14,
           padding: 16,
           borderRadius: 20,
-          backgroundColor: theme.colors.primary,
+          backgroundColor: miViandaPalette.primary,
         },
-        moduleCardSecondary: {
+        moduleCardGastos: {
           flexDirection: "row",
           alignItems: "center",
           gap: 14,
           padding: 16,
           borderRadius: 20,
-          backgroundColor: theme.colors.surfaceVariant,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
+          backgroundColor: misGastosPalette.primary,
         },
-        iconBoxPrimary: {
+        iconBox: {
           width: 48,
           height: 48,
           borderRadius: 14,
-          backgroundColor: "rgba(255, 255, 255, 0.16)",
-          alignItems: "center",
-          justifyContent: "center",
-        },
-        iconBoxSecondary: {
-          width: 48,
-          height: 48,
-          borderRadius: 14,
-          backgroundColor: `${theme.colors.primary}15`,
+          backgroundColor: "rgba(255, 255, 255, 0.18)",
           alignItems: "center",
           justifyContent: "center",
         },
@@ -104,23 +95,13 @@ export default function BienvenidaScreen() {
           flex: 1,
           gap: 2,
         },
-        cardTitlePrimary: {
+        cardTitle: {
           color: "#ffffff",
           fontSize: getFontSize(width, 18),
           fontWeight: "800",
         },
-        cardDescPrimary: {
-          color: "rgba(255, 255, 255, 0.85)",
-          fontSize: getFontSize(width, 13),
-          lineHeight: getLineHeight(getFontSize(width, 13)),
-        },
-        cardTitleSecondary: {
-          color: theme.colors.onSurface,
-          fontSize: getFontSize(width, 18),
-          fontWeight: "800",
-        },
-        cardDescSecondary: {
-          color: theme.colors.onSurfaceVariant,
+        cardDesc: {
+          color: "rgba(255, 255, 255, 0.88)",
           fontSize: getFontSize(width, 13),
           lineHeight: getLineHeight(getFontSize(width, 13)),
         },
@@ -134,7 +115,6 @@ export default function BienvenidaScreen() {
       theme.colors.outline,
       theme.colors.primary,
       theme.colors.surface,
-      theme.colors.surfaceVariant,
       titleSize,
       width,
     ]
@@ -156,7 +136,7 @@ export default function BienvenidaScreen() {
           <View style={styles.cardsList}>
             <Pressable
               style={({ pressed }) => [
-                styles.moduleCardPrimary,
+                styles.moduleCardVianda,
                 pressed && { opacity: 0.9, transform: [{ scale: 0.99 }] },
               ]}
               onPress={() =>
@@ -170,12 +150,12 @@ export default function BienvenidaScreen() {
               accessibilityRole="button"
               accessibilityLabel="Ir a MiVianda"
             >
-              <View style={styles.iconBoxPrimary}>
+              <View style={styles.iconBox}>
                 <UtensilsCrossed color="#ffffff" size={24} strokeWidth={2.2} />
               </View>
               <View style={styles.cardTextBlock}>
-                <Text style={styles.cardTitlePrimary}>MiVianda</Text>
-                <Text style={styles.cardDescPrimary}>
+                <Text style={styles.cardTitle}>MiVianda</Text>
+                <Text style={styles.cardDesc}>
                   Clientes, ciclos de cobro de 20 días hábiles, calendario y feriados.
                 </Text>
               </View>
@@ -184,8 +164,8 @@ export default function BienvenidaScreen() {
 
             <Pressable
               style={({ pressed }) => [
-                styles.moduleCardSecondary,
-                pressed && { opacity: 0.85, transform: [{ scale: 0.99 }] },
+                styles.moduleCardGastos,
+                pressed && { opacity: 0.9, transform: [{ scale: 0.99 }] },
               ]}
               onPress={() =>
                 navigation.dispatch(
@@ -198,16 +178,16 @@ export default function BienvenidaScreen() {
               accessibilityRole="button"
               accessibilityLabel="Ir a MisGastos"
             >
-              <View style={styles.iconBoxSecondary}>
-                <Wallet color={theme.colors.primary} size={24} strokeWidth={2.2} />
+              <View style={styles.iconBox}>
+                <Wallet color="#ffffff" size={24} strokeWidth={2.2} />
               </View>
               <View style={styles.cardTextBlock}>
-                <Text style={styles.cardTitleSecondary}>MisGastos</Text>
-                <Text style={styles.cardDescSecondary}>
+                <Text style={styles.cardTitle}>MisGastos</Text>
+                <Text style={styles.cardDesc}>
                   Categorías personalizadas, registro en pesos y análisis por período.
                 </Text>
               </View>
-              <ArrowRight color={theme.colors.primary} size={20} strokeWidth={2.3} />
+              <ArrowRight color="#ffffff" size={20} strokeWidth={2.3} />
             </Pressable>
           </View>
         </Surface>

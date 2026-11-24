@@ -23,18 +23,18 @@ type Props = {
 };
 
 const wheelColors = [
-  "#1f4d45",
+  "#1d4f91",
   "#2563eb",
-  "#7c3aed",
   "#0891b2",
-  "#c0392b",
+  "#4f46e5",
+  "#7c3aed",
+  "#2f855a",
   "#f4b740",
-  "#49776f",
+  "#c0392b",
   "#9a3412",
-  "#166534",
   "#475569",
   "#be185d",
-  "#4f46e5",
+  "#166534",
 ];
 
 const polarToCartesian = (cx: number, cy: number, radius: number, angle: number) => {

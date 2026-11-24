@@ -61,13 +61,13 @@ export type ExpenseFormState = {
 };
 
 export const categoryColors = [
-  "#1f4d45",
-  "#49776f",
+  "#1d4f91",
+  "#2563eb",
+  "#0891b2",
+  "#7c3aed",
+  "#2f855a",
   "#f4b740",
   "#c0392b",
-  "#2563eb",
-  "#7c3aed",
-  "#0891b2",
   "#9a3412",
 ];
 

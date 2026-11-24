@@ -35,7 +35,7 @@ import EstadisticasScreen from "./src/screens/MiVianda/EstadisticasScreen";
 import RespaldoScreen from "./src/screens/MiVianda/RespaldoScreen";
 import Header from "./src/components/MiVianda/Header";
 import MiViandaScreenSelector from "./src/components/MiVianda/ScreenSelector";
-import { appTheme } from "./src/theme/appTheme";
+import { appTheme, miViandaTheme, misGastosTheme } from "./src/theme/appTheme";
 import { useStore } from "./src/store/zustand";
 import {
   MiViandaStackParamList,
@@ -94,39 +94,41 @@ function MiViandaModule() {
   }, [hydrateMiVianda]);
 
   return (
-    <View style={{ flex: 1 }}>
-      <StatusBar style="light" />
-      <Header
-        onHomePress={() => {
-          navigation.dispatch(
-            CommonActions.reset({
-              index: 0,
-              routes: [{ name: "Bienvenida" }],
-            })
-          );
-        }}
-      />
+    <PaperProvider theme={miViandaTheme}>
       <View style={{ flex: 1 }}>
-        <MiViandaStack.Navigator
-          initialRouteName="Clientes"
-          screenOptions={{
-            headerShown: false,
-            animation: "none",
+        <StatusBar style="light" />
+        <Header
+          onHomePress={() => {
+            navigation.dispatch(
+              CommonActions.reset({
+                index: 0,
+                routes: [{ name: "Bienvenida" }],
+              })
+            );
           }}
-        >
-          <MiViandaStack.Screen name="Clientes" component={ClientesScreen} />
-          <MiViandaStack.Screen name="Nuevo Cliente" component={NuevoClienteScreen} />
-          <MiViandaStack.Screen name="Cobros" component={CobrosScreen} />
-          <MiViandaStack.Screen name="Calendario" component={CalendarioScreen} />
-          <MiViandaStack.Screen name="Configuracion" component={ConfiguracionScreen} />
-          <MiViandaStack.Screen name="Tipos de vianda" component={TiposViandaScreen} />
-          <MiViandaStack.Screen name="Feriados" component={FeriadosScreen} />
-          <MiViandaStack.Screen name="Estadisticas" component={EstadisticasScreen} />
-          <MiViandaStack.Screen name="Respaldo" component={RespaldoScreen} />
-        </MiViandaStack.Navigator>
+        />
+        <View style={{ flex: 1 }}>
+          <MiViandaStack.Navigator
+            initialRouteName="Clientes"
+            screenOptions={{
+              headerShown: false,
+              animation: "none",
+            }}
+          >
+            <MiViandaStack.Screen name="Clientes" component={ClientesScreen} />
+            <MiViandaStack.Screen name="Nuevo Cliente" component={NuevoClienteScreen} />
+            <MiViandaStack.Screen name="Cobros" component={CobrosScreen} />
+            <MiViandaStack.Screen name="Calendario" component={CalendarioScreen} />
+            <MiViandaStack.Screen name="Configuracion" component={ConfiguracionScreen} />
+            <MiViandaStack.Screen name="Tipos de vianda" component={TiposViandaScreen} />
+            <MiViandaStack.Screen name="Feriados" component={FeriadosScreen} />
+            <MiViandaStack.Screen name="Estadisticas" component={EstadisticasScreen} />
+            <MiViandaStack.Screen name="Respaldo" component={RespaldoScreen} />
+          </MiViandaStack.Navigator>
+        </View>
+        <MiViandaScreenSelector />
       </View>
-      <MiViandaScreenSelector />
-    </View>
+    </PaperProvider>
   );
 }
 
@@ -138,25 +140,27 @@ function MisGastosModule() {
   }, [hydrateMisGastos]);
 
   return (
-    <View style={{ flex: 1 }}>
-      <StatusBar style="light" />
-      <MisGastosHeader />
+    <PaperProvider theme={misGastosTheme}>
       <View style={{ flex: 1 }}>
-        <MisGastosStack.Navigator
-          initialRouteName="Resumen"
-          screenOptions={{
-            headerShown: false,
-            animation: "none",
-          }}
-        >
-          <MisGastosStack.Screen name="Resumen" component={ResumenScreen} />
-          <MisGastosStack.Screen name="Categorias" component={CategoriasScreen} />
-          <MisGastosStack.Screen name="Gastos" component={GastosScreen} />
-          <MisGastosStack.Screen name="Respaldo" component={RespaldoMisGastosScreen} />
-        </MisGastosStack.Navigator>
+        <StatusBar style="light" />
+        <MisGastosHeader />
+        <View style={{ flex: 1 }}>
+          <MisGastosStack.Navigator
+            initialRouteName="Resumen"
+            screenOptions={{
+              headerShown: false,
+              animation: "none",
+            }}
+          >
+            <MisGastosStack.Screen name="Resumen" component={ResumenScreen} />
+            <MisGastosStack.Screen name="Categorias" component={CategoriasScreen} />
+            <MisGastosStack.Screen name="Gastos" component={GastosScreen} />
+            <MisGastosStack.Screen name="Respaldo" component={RespaldoMisGastosScreen} />
+          </MisGastosStack.Navigator>
+        </View>
+        <MisGastosScreenSelector />
       </View>
-      <MisGastosScreenSelector />
-    </View>
+    </PaperProvider>
   );
 }
 
