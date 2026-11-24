@@ -6,12 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.aquinoalejandro666.micarrerita"
@@ -21,52 +15,51 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "package": "com.aquinoalejandro666.micarrerita",
       "intentFilters": [
         {
-          "action": "android.intent.action.SEND",
+          "action": "SEND",
           "category": [
-            "android.intent.category.DEFAULT"
+            "DEFAULT"
           ],
           "data": {
             "mimeType": "*/*"
           }
         },
         {
-          "action": "android.intent.action.SEND_MULTIPLE",
+          "action": "SEND_MULTIPLE",
           "category": [
-            "android.intent.category.DEFAULT"
+            "DEFAULT"
           ],
           "data": {
             "mimeType": "*/*"
           }
         },
         {
-          "action": "android.intent.action.VIEW",
+          "action": "VIEW",
           "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
+            "DEFAULT",
+            "BROWSABLE"
           ],
           "data": {
             "scheme": "content"
           }
         },
         {
-          "action": "android.intent.action.VIEW",
+          "action": "VIEW",
           "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
+            "DEFAULT",
+            "BROWSABLE"
           ],
           "data": {
             "scheme": "file"
           }
         },
         {
-          "action": "android.intent.action.VIEW",
+          "action": "VIEW",
           "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
+            "DEFAULT",
+            "BROWSABLE"
           ],
           "data": {
             "mimeType": "application/json"
@@ -82,6 +75,25 @@
         "projectId": "99612cff-26d0-436b-b505-d8b5390dca03"
       }
     },
-    "owner": "aquinoalejandro666"
+    "owner": "aquinoalejandro666",
+    "plugins": [
+      "expo-sharing",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-font",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Permitir que Mi Viandita agende tus clientes en Contactos."
+        }
+      ]
+    ]
   }
 }

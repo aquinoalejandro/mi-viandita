@@ -1,155 +1,134 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
+import React, { useCallback, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
 import {
   Button,
-  FAB,
-  IconButton,
-  List,
+  Checkbox,
+  HelperText,
   Snackbar,
+  Surface,
   Text,
   TextInput,
   useTheme,
 } from "react-native-paper";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useIsFocused } from "@react-navigation/native";
-import { Client, MealSelection, MiViandaStackParamList, ViandaTipo } from "../../types/types";
-import { STORAGE_KEYS } from "../../utils/storage";
-import { getTodayString } from "../../utils/date";
+import { DatePickerModal } from "react-native-paper-dates";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+
+import { useStore } from "../../store/zustand";
 import {
   CONTENT_MAX_WIDTH,
-  getMiViandaFabBottomOffset,
   getFontSize,
-  getLineHeight,
   getSpacing,
 } from "../../theme/layout";
+import type { Client, MealSelection, MiViandaStackParamList } from "../../types/types";
+import { formatDateLong, formatLocalDate, getTodayString } from "../../utils/date";
+import MealSelectionEditor, { buildEmptyMealSelection } from "./components/MealSelectionEditor";
 
-type Props = NativeStackScreenProps<MiViandaStackParamList, "Nuevo Cliente">;
+type NavigationProp = NativeStackNavigationProp<MiViandaStackParamList, "Nuevo Cliente">;
 
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const buildEmptySelection = (): MealSelection => ({
-  id: createId(),
-  tipo: "",
-  cantidad: 1,
-});
-
-export default function NuevoClienteScreen({ navigation }: Props) {
-  const isFocused = useIsFocused();
+export default function NuevoClienteScreen() {
+  const navigation = useNavigation<NavigationProp>();
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const spacing = getSpacing(width);
-  const fabBottomOffset = getMiViandaFabBottomOffset();
   const titleSize = getFontSize(width, 24);
-  const subtitleSize = getFontSize(width, 18);
-  const [clientes, setClientes] = useState<Client[]>([]);
+  const subtitleSize = getFontSize(width, 17);
+
+  const setUbi = useStore((state) => state.setUbi);
+  const clientes = useStore((state) => state.miViandaClientes);
+  const tiposVianda = useStore((state) => state.miViandaTiposVianda);
+  const addMiViandaClient = useStore((state) => state.addMiViandaClient);
+
   const [nombre, setNombre] = useState("");
   const [detalle, setDetalle] = useState("");
   const [direccion, setDireccion] = useState("");
   const [telefono, setTelefono] = useState("");
-  const [viandas, setViandas] = useState<MealSelection[]>([buildEmptySelection()]);
-  const [tiposVianda, setTiposVianda] = useState<ViandaTipo[]>([]);
-  const [expandedTipoId, setExpandedTipoId] = useState<string | null>(null);
+  const [viandas, setViandas] = useState<MealSelection[]>([buildEmptyMealSelection()]);
+  const [registrarPagoInicial, setRegistrarPagoInicial] = useState(false);
+  const [fechaPagoInicial, setFechaPagoInicial] = useState(getTodayString());
+  const [detallePagoInicial, setDetallePagoInicial] = useState("");
+  const [openDatePicker, setOpenDatePicker] = useState(false);
+  const [attemptedSave, setAttemptedSave] = useState(false);
   const [snackbar, setSnackbar] = useState({ visible: false, message: "" });
 
-  useEffect(() => {
-    if (!isFocused) return;
-    loadClientes();
-  }, [isFocused]);
+  useFocusEffect(
+    useCallback(() => {
+      setUbi("Clientes");
+    }, [setUbi])
+  );
 
   const showMessage = (message: string) => {
     setSnackbar({ visible: true, message });
   };
 
-  const loadClientes = async () => {
-    const [dataClientes, dataTipos] = await Promise.all([
-      AsyncStorage.getItem(STORAGE_KEYS.CLIENTES),
-      AsyncStorage.getItem(STORAGE_KEYS.VIANDAS_TIPOS),
-    ]);
-    setClientes(dataClientes ? (JSON.parse(dataClientes) as Client[]) : []);
-    setTiposVianda(dataTipos ? (JSON.parse(dataTipos) as ViandaTipo[]) : []);
-  };
+  const nombreLimpio = nombre.trim();
+  const yaExiste = Boolean(
+    nombreLimpio &&
+      clientes.some((c) => c.nombre.toLowerCase() === nombreLimpio.toLowerCase())
+  );
+  const nombreError = !nombreLimpio
+    ? "Ingresá el nombre del cliente."
+    : yaExiste
+    ? "Ya existe un cliente con ese nombre."
+    : null;
 
-  const updateTipo = (selectionId: string, tipo: string) => {
-    setViandas((prev) =>
-      prev.map((item) => (item.id === selectionId ? { ...item, tipo } : item))
-    );
-  };
+  const viandasLimpias = useMemo(
+    () =>
+      viandas
+        .map((item) => ({ ...item, tipo: item.tipo.trim() }))
+        .filter((item) => item.tipo.length > 0 && item.cantidad > 0),
+    [viandas]
+  );
 
-  const updateCantidad = (selectionId: string, cantidadText: string) => {
-    const parsed = Number(cantidadText.replace(/[^\d]/g, ""));
-    setViandas((prev) =>
-      prev.map((item) =>
-        item.id === selectionId
-          ? { ...item, cantidad: Number.isFinite(parsed) && parsed > 0 ? parsed : 1 }
-          : item
-      )
-    );
-  };
-
-  const addViandaRow = () => {
-    setViandas((prev) => [...prev, buildEmptySelection()]);
-  };
-
-  const removeViandaRow = (selectionId: string) => {
-    setViandas((prev) => {
-      if (prev.length === 1) return prev;
-      return prev.filter((item) => item.id !== selectionId);
-    });
+  const volver = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate("Clientes");
+    }
   };
 
   const guardarCliente = async () => {
-    const nombreLimpio = nombre.trim();
-    if (!nombreLimpio) {
-      showMessage("Ingresá el nombre del cliente.");
+    setAttemptedSave(true);
+
+    if (nombreError || viandasLimpias.length === 0) {
+      showMessage(nombreError ?? "Cargá al menos un tipo de vianda con cantidad.");
       return;
     }
 
-    const viandasLimpias = viandas
-      .map((item) => ({
-        ...item,
-        tipo: item.tipo.trim(),
-      }))
-      .filter((item) => item.tipo.length > 0 && item.cantidad > 0);
+    const totalComidas = viandasLimpias.reduce((s, v) => s + v.cantidad, 0);
+    const nuevoCliente: Client = {
+      id: createId(),
+      nombre: nombreLimpio,
+      viandas: viandasLimpias,
+      detalleEspecifico: detalle.trim() ? detalle.trim() : undefined,
+      direccion: direccion.trim() ? direccion.trim() : undefined,
+      telefono: telefono.trim() ? telefono.trim() : undefined,
+      creadoEn: getTodayString(),
+      totalComidas,
+      diasConsumidosEnPeriodo: 0,
+      comidasReponer: 0,
+      ajusteDiasPeriodo: 0,
+    };
 
-    if (viandasLimpias.length === 0) {
-      showMessage("Cargá al menos un tipo de vianda con cantidad.");
-      return;
-    }
-
-    const yaExiste = clientes.some(
-      (cliente) => cliente.nombre.toLowerCase() === nombreLimpio.toLowerCase()
+    await addMiViandaClient(
+      nuevoCliente,
+      registrarPagoInicial
+        ? { fecha: fechaPagoInicial, detalle: detallePagoInicial.trim() || "Pago inicial" }
+        : undefined
     );
 
-    if (yaExiste) {
-      showMessage("Ya existe un cliente con ese nombre.");
-      return;
-    }
-
-     const nuevoCliente: Client = {
-       id: createId(),
-       nombre: nombreLimpio,
-       viandas: viandasLimpias,
-       detalleEspecifico: detalle.trim() ? detalle.trim() : undefined,
-       direccion: direccion.trim() ? direccion.trim() : undefined,
-       telefono: telefono.trim() ? telefono.trim() : undefined,
-       creadoEn: getTodayString(),
-       totalComidas: 0,
-       diasConsumidosEnPeriodo: 0,
-       comidasReponer: 0,
-       ajusteDiasPeriodo: 0,
-     };
-
-    const updated = [...clientes, nuevoCliente];
-    await AsyncStorage.setItem(STORAGE_KEYS.CLIENTES, JSON.stringify(updated));
-    setClientes(updated);
-
-    showMessage("Cliente guardado.");
     setNombre("");
     setDetalle("");
     setDireccion("");
     setTelefono("");
-    setViandas([buildEmptySelection()]);
+    setViandas([buildEmptyMealSelection()]);
+    setRegistrarPagoInicial(false);
+    setFechaPagoInicial(getTodayString());
+    setDetallePagoInicial("");
+    setAttemptedSave(false);
     navigation.navigate("Clientes");
   };
 
@@ -168,163 +147,209 @@ export default function NuevoClienteScreen({ navigation }: Props) {
           width: "100%",
           maxWidth: CONTENT_MAX_WIDTH,
           alignSelf: "center",
-          gap: 10,
+          gap: 12,
+        },
+        headerRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
         },
         title: {
           fontSize: titleSize,
-          fontWeight: "700",
+          fontWeight: "800",
           color: theme.colors.onSurface,
+        },
+        card: {
+          padding: 14,
+          borderRadius: 16,
+          backgroundColor: theme.colors.surface,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+          gap: 10,
         },
         subtitle: {
           fontSize: subtitleSize,
-          fontWeight: "600",
-          marginTop: 10,
+          fontWeight: "700",
           color: theme.colors.onSurface,
-        },
-        emptyText: {
-          color: theme.colors.onSurfaceVariant,
-          marginBottom: 8,
-          fontSize: getFontSize(width, 15),
-          lineHeight: getLineHeight(getFontSize(width, 15)),
         },
         input: {
           backgroundColor: theme.colors.surface,
         },
-        row: {
+        checkboxRow: {
           flexDirection: "row",
           alignItems: "center",
+          gap: 6,
         },
-        typeInput: {
-          flex: 1,
-        },
-        qtyInput: {
-          width: 90,
-          marginLeft: 10,
+        dateRow: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 8,
+          alignItems: "center",
         },
         mainButton: {
-          marginTop: 12,
-          borderRadius: 12,
-        },
-        fab: {
-          position: "absolute",
-          margin: 16,
-          right: 0,
-          bottom: fabBottomOffset,
-          backgroundColor: theme.colors.secondary,
+          borderRadius: 14,
         },
       }),
     [
-      fabBottomOffset,
       spacing,
       subtitleSize,
       theme.colors.background,
       theme.colors.onSurface,
-      theme.colors.onSurfaceVariant,
-      theme.colors.secondary,
+      theme.colors.outline,
       theme.colors.surface,
       titleSize,
-      width,
     ]
   );
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.content}>
-          <Text style={styles.title}>Nuevo cliente</Text>
+          <View style={styles.headerRow}>
+            <Text style={styles.title}>Nuevo cliente</Text>
+            <Button mode="text" icon="arrow-left" onPress={volver}>
+              Volver
+            </Button>
+          </View>
 
-          <TextInput
-            label="Nombre del cliente"
-            value={nombre}
-            onChangeText={setNombre}
-            style={styles.input}
-          />
-          <TextInput
-            label="Detalle específico (opcional)"
-            value={detalle}
-            onChangeText={setDetalle}
-            style={styles.input}
-          />
-          <TextInput
-            label="Dirección (opcional)"
-            value={direccion}
-            onChangeText={setDireccion}
-            style={styles.input}
-          />
-          <TextInput
-            label="Teléfono (opcional)"
-            value={telefono}
-            onChangeText={setTelefono}
-            keyboardType="phone-pad"
-            style={styles.input}
-          />
+          <Surface style={styles.card} elevation={0}>
+            <Text style={styles.subtitle}>Datos del cliente</Text>
 
-          <Text style={styles.subtitle}>Viandas elegidas</Text>
-          {tiposVianda.length === 0 && (
-            <Text style={styles.emptyText}>
-              No hay tipos de vianda cargados. Agregalos en Configuración.
-            </Text>
-          )}
-          {viandas.map((item, index) => (
-            <View key={item.id} style={styles.row}>
-              <View style={styles.typeInput}>
-                <List.Accordion
-                  title={item.tipo ? item.tipo : `Tipo de vianda ${index + 1}`}
-                  expanded={expandedTipoId === item.id}
-                  onPress={() =>
-                    setExpandedTipoId((prev) => (prev === item.id ? null : item.id))
-                  }
-                >
-                  {tiposVianda.map((tipo) => (
-                    <List.Item
-                      key={tipo.id}
-                      title={tipo.nombre}
-                      onPress={() => {
-                        updateTipo(item.id, tipo.nombre);
-                        setExpandedTipoId(null);
-                      }}
-                    />
-                  ))}
-                </List.Accordion>
-              </View>
+            <View>
               <TextInput
-                label="Cant."
-                value={String(item.cantidad)}
-                onChangeText={(value) => updateCantidad(item.id, value)}
-                keyboardType="numeric"
-                style={[styles.input, styles.qtyInput]}
+                label="Nombre del cliente"
+                value={nombre}
+                onChangeText={setNombre}
+                mode="outlined"
+                autoCapitalize="words"
+                maxLength={60}
+                style={styles.input}
+                error={Boolean((attemptedSave || nombre.length > 0) && nombreError)}
               />
-              <IconButton
-                icon="delete"
-                onPress={() => removeViandaRow(item.id)}
-                disabled={viandas.length === 1}
-                iconColor={theme.colors.error}
-              />
+              {(attemptedSave || nombre.length > 0) && nombreError ? (
+                <HelperText type="error" visible>
+                  {nombreError}
+                </HelperText>
+              ) : null}
             </View>
-          ))}
 
-          <Button mode="outlined" onPress={addViandaRow} contentStyle={{ minHeight: 48 }}>
-            Agregar otro tipo de vianda
-          </Button>
+            <TextInput
+              label="Detalle específico (opcional)"
+              value={detalle}
+              onChangeText={setDetalle}
+              mode="outlined"
+              autoCapitalize="sentences"
+              maxLength={120}
+              style={styles.input}
+            />
+            <TextInput
+              label="Dirección (opcional)"
+              value={direccion}
+              onChangeText={setDireccion}
+              mode="outlined"
+              autoCapitalize="sentences"
+              maxLength={120}
+              style={styles.input}
+            />
+            <TextInput
+              label="Teléfono (opcional)"
+              value={telefono}
+              onChangeText={setTelefono}
+              mode="outlined"
+              keyboardType="phone-pad"
+              maxLength={30}
+              style={styles.input}
+            />
+          </Surface>
+
+          <Surface style={styles.card} elevation={0}>
+            <Text style={styles.subtitle}>Viandas elegidas</Text>
+            <MealSelectionEditor
+              viandas={viandas}
+              tiposVianda={tiposVianda}
+              onChange={setViandas}
+              showError={attemptedSave}
+              onNavigateToTipos={() => navigation.navigate("Tipos de vianda")}
+            />
+          </Surface>
+
+          <Surface style={styles.card} elevation={0}>
+            <Pressable
+              style={styles.checkboxRow}
+              onPress={() => setRegistrarPagoInicial((prev) => !prev)}
+            >
+              <Checkbox status={registrarPagoInicial ? "checked" : "unchecked"} />
+              <Text style={{ fontWeight: "600", flex: 1 }}>
+                Registrar primer pago al crear
+              </Text>
+            </Pressable>
+
+            {registrarPagoInicial ? (
+              <View style={{ gap: 8 }}>
+                <Text style={{ color: theme.colors.onSurfaceVariant }}>
+                  Fecha de inicio del ciclo:{" "}
+                  <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>
+                    {formatDateLong(fechaPagoInicial)}
+                  </Text>
+                </Text>
+                <View style={styles.dateRow}>
+                  <Button
+                    mode="outlined"
+                    icon="calendar"
+                    onPress={() => setOpenDatePicker(true)}
+                  >
+                    Elegir fecha
+                  </Button>
+                  <Button
+                    mode="text"
+                    onPress={() => setFechaPagoInicial(getTodayString())}
+                  >
+                    Usar hoy
+                  </Button>
+                </View>
+                <TextInput
+                  label="Nota del pago (opcional)"
+                  value={detallePagoInicial}
+                  onChangeText={setDetallePagoInicial}
+                  mode="outlined"
+                  placeholder="Ej.: Efectivo, Transferencia"
+                  maxLength={60}
+                  style={styles.input}
+                />
+              </View>
+            ) : null}
+          </Surface>
 
           <Button
             mode="contained"
+            icon="check"
             onPress={guardarCliente}
             style={styles.mainButton}
             buttonColor={theme.colors.primary}
-            contentStyle={{ minHeight: 48 }}
+            contentStyle={{ minHeight: 50 }}
           >
             Guardar cliente
           </Button>
         </View>
       </ScrollView>
 
-      <FAB
-        icon="arrow-left"
-        style={styles.fab}
-        color={theme.colors.onSecondary}
-        onPress={() => navigation.navigate("Clientes")}
-        accessibilityLabel="Volver a clientes"
+      <DatePickerModal
+        locale="es"
+        mode="single"
+        visible={openDatePicker}
+        date={new Date(`${fechaPagoInicial}T00:00:00`)}
+        onDismiss={() => setOpenDatePicker(false)}
+        onConfirm={({ date }) => {
+          setOpenDatePicker(false);
+          if (date) {
+            setFechaPagoInicial(formatLocalDate(date));
+          }
+        }}
       />
 
       <Snackbar

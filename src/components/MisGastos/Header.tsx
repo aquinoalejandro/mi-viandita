@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "react-native-paper";
 import { CommonActions, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { House, Wallet } from "lucide-react-native";
 import type { RootStackParamList } from "../../types/types";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
@@ -20,58 +21,78 @@ export default function Header() {
         container: {
           backgroundColor: theme.colors.primary,
           width: "100%",
-          height: isSmallScreen ? 72 : 100,
-          justifyContent: "center",
-          paddingHorizontal: isSmallScreen ? 18 : 24,
-          paddingVertical: 10,
+          paddingHorizontal: isSmallScreen ? 16 : 22,
+          paddingVertical: 12,
           borderBottomWidth: 1,
-          borderBottomColor: theme.colors.outline,
+          borderBottomColor: "rgba(255, 255, 255, 0.12)",
         },
         content: {
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          height: "100%",
+        },
+        brandRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+        },
+        iconBadge: {
+          width: isSmallScreen ? 38 : 44,
+          height: isSmallScreen ? 38 : 44,
+          borderRadius: 12,
+          backgroundColor: "rgba(255, 255, 255, 0.16)",
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: "rgba(255, 255, 255, 0.22)",
         },
         titleBlock: {
-          gap: 2,
+          gap: 1,
         },
         eyebrow: {
-          color: theme.colors.onPrimary,
-          fontSize: isSmallScreen ? 12 : 13,
-          fontWeight: "600",
-          opacity: 0.75,
+          color: "rgba(255, 255, 255, 0.75)",
+          fontSize: isSmallScreen ? 10 : 11,
+          fontWeight: "700",
           textTransform: "uppercase",
-          letterSpacing: 0.8,
+          letterSpacing: 1,
         },
         title: {
-          color: theme.colors.onPrimary,
-          fontSize: isSmallScreen ? 22 : 26,
-          fontWeight: "700",
-          letterSpacing: 0.2,
+          color: "#ffffff",
+          fontSize: isSmallScreen ? 20 : 23,
+          fontWeight: "800",
+          letterSpacing: 0.3,
         },
         homeButton: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          backgroundColor: "rgba(255, 255, 255, 0.14)",
           borderWidth: 1,
-          borderColor: "rgba(255,255,255,0.28)",
-          borderRadius: 999,
-          paddingHorizontal: 14,
-          paddingVertical: 8,
+          borderColor: "rgba(255, 255, 255, 0.24)",
+          borderRadius: 20,
+          paddingHorizontal: 12,
+          paddingVertical: 7,
         },
         homeButtonLabel: {
-          color: theme.colors.onPrimary,
-          fontSize: isSmallScreen ? 12 : 13,
+          color: "#ffffff",
+          fontSize: isSmallScreen ? 11 : 12,
           fontWeight: "700",
         },
       }),
-    [isSmallScreen, theme.colors.onPrimary, theme.colors.outline, theme.colors.primary]
+    [isSmallScreen, theme.colors.primary]
   );
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.content}>
-        <View style={styles.titleBlock}>
-          <Text style={styles.eyebrow}>MiViandita</Text>
-          <Text style={styles.title}>MisGastos</Text>
+        <View style={styles.brandRow}>
+          <View style={styles.iconBadge}>
+            <Wallet color="#ffffff" size={isSmallScreen ? 20 : 24} strokeWidth={2.2} />
+          </View>
+          <View style={styles.titleBlock}>
+            <Text style={styles.eyebrow}>MiViandita</Text>
+            <Text style={styles.title}>MisGastos</Text>
+          </View>
         </View>
         <Pressable
           onPress={() =>
@@ -83,7 +104,10 @@ export default function Header() {
             )
           }
           style={styles.homeButton}
+          accessibilityRole="button"
+          accessibilityLabel="Volver a inicio"
         >
+          <House color="#ffffff" size={15} strokeWidth={2.4} />
           <Text style={styles.homeButtonLabel}>Inicio</Text>
         </Pressable>
       </View>

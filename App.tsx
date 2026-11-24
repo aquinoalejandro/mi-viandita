@@ -1,8 +1,9 @@
 import * as React from "react";
 import { Alert, DeviceEventEmitter, View } from "react-native";
 import { PaperProvider } from "react-native-paper";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as FileSystem from "expo-file-system/legacy";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { registerTranslation, es } from "react-native-paper-dates";
 import {
   NavigationContainer,
   CommonActions,
@@ -17,7 +18,6 @@ import {
 } from "@react-navigation/native-stack";
 
 import BienvenidaScreen from "./src/screens/BienvenidaScreen";
-import MisGastosScreen from "./src/screens/MisGastos/MisGastosScreen";
 import ResumenScreen from "./src/screens/MisGastos/ResumenScreen";
 import CategoriasScreen from "./src/screens/MisGastos/CategoriasScreen";
 import GastosScreen from "./src/screens/MisGastos/GastosScreen";
@@ -38,56 +38,64 @@ import MiViandaScreenSelector from "./src/components/MiVianda/ScreenSelector";
 import { appTheme } from "./src/theme/appTheme";
 import { useStore } from "./src/store/zustand";
 import {
-  Client,
-  ClientEvent,
-  Holiday,
-  PaymentCycle,
-  Period,
-  ViandaTipo,
   MiViandaStackParamList,
   MisGastosStackParamList,
   RootStackParamList,
 } from "./src/types/types";
-import { STORAGE_KEYS } from "./src/utils/storage";
-import { resolveSharedFileUri } from "./src/utils/sharedBackupFile";
+import { readSharedFileText } from "./src/utils/sharedBackupFile";
+import { detectSharedBackup } from "./src/utils/backup";
+
+registerTranslation("es", es);
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const MiViandaStack = createNativeStackNavigator<MiViandaStackParamList>();
 const MisGastosStack = createNativeStackNavigator<MisGastosStackParamList>();
 
-const mapRouteToTab = (
+const mapMiViandaRouteToTab = (
   routeName?: string
 ): keyof MiViandaStackParamList | undefined => {
   if (!routeName) return undefined;
-  if (routeName === "Nuevo Cliente") return "Clientes";
-  if (routeName === "Tipos de vianda") return "Configuracion";
-  if (routeName === "Feriados") return "Configuracion";
-  if (routeName === "Estadisticas") return "Configuracion";
-  if (routeName === "Respaldo") return "Configuracion";
-  if (routeName === "Clientes") return "Clientes";
+  if (routeName === "Nuevo Cliente" || routeName === "Clientes") return "Clientes";
+  if (
+    routeName === "Tipos de vianda" ||
+    routeName === "Feriados" ||
+    routeName === "Estadisticas" ||
+    routeName === "Respaldo" ||
+    routeName === "Configuracion"
+  ) {
+    return "Configuracion";
+  }
   if (routeName === "Cobros") return "Cobros";
   if (routeName === "Calendario") return "Calendario";
-  if (routeName === "Configuracion") return "Configuracion";
   return undefined;
 };
 
-const getActiveRouteName = (
-  state?: NavigationState | PartialState<NavigationState>
-): string | undefined => {
-  if (!state) return undefined;
-  const route = state.routes[state.index ?? 0];
-  if (!route) return undefined;
-  if ("state" in route && route.state) {
-    return getActiveRouteName(route.state as NavigationState);
+const mapMisGastosRouteToTab = (
+  routeName?: string
+): keyof MisGastosStackParamList | undefined => {
+  if (!routeName) return undefined;
+  if (
+    routeName === "Resumen" ||
+    routeName === "Gastos" ||
+    routeName === "Categorias" ||
+    routeName === "Respaldo"
+  ) {
+    return routeName;
   }
-  return route.name;
+  return undefined;
 };
 
 function MiViandaModule() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList, "MiVianda">>();
+  const hydrateMiVianda = useStore((state) => state.hydrateMiVianda);
+
+  React.useEffect(() => {
+    void hydrateMiVianda();
+  }, [hydrateMiVianda]);
 
   return (
     <View style={{ flex: 1 }}>
+      <StatusBar style="light" />
       <Header
         onHomePress={() => {
           navigation.dispatch(
@@ -100,12 +108,12 @@ function MiViandaModule() {
       />
       <View style={{ flex: 1 }}>
         <MiViandaStack.Navigator
+          initialRouteName="Clientes"
           screenOptions={{
             headerShown: false,
-            animation: 'none',
+            animation: "none",
           }}
         >
-
           <MiViandaStack.Screen name="Clientes" component={ClientesScreen} />
           <MiViandaStack.Screen name="Nuevo Cliente" component={NuevoClienteScreen} />
           <MiViandaStack.Screen name="Cobros" component={CobrosScreen} />
@@ -131,17 +139,16 @@ function MisGastosModule() {
 
   return (
     <View style={{ flex: 1 }}>
+      <StatusBar style="light" />
       <MisGastosHeader />
       <View style={{ flex: 1 }}>
         <MisGastosStack.Navigator
-          initialRouteName="Home"
+          initialRouteName="Resumen"
           screenOptions={{
             headerShown: false,
-            animation: 'none',
+            animation: "none",
           }}
         >
-
-          <MisGastosStack.Screen name="Home" component={MisGastosScreen} />
           <MisGastosStack.Screen name="Resumen" component={ResumenScreen} />
           <MisGastosStack.Screen name="Categorias" component={CategoriasScreen} />
           <MisGastosStack.Screen name="Gastos" component={GastosScreen} />
@@ -158,103 +165,154 @@ type SharedBackupPayload = {
   mimeType?: string;
 };
 
-const importarRespaldoDesdeUri = async (uri: string) => {
-  const readableUri = await resolveSharedFileUri(uri);
-  const content = await FileSystem.readAsStringAsync(readableUri);
-  const parsed = JSON.parse(content) as Partial<{
-    clientes: Client[];
-    eventosCliente: ClientEvent[];
-    periodos: Period[];
-    feriados: Holiday[];
-    tiposVianda: ViandaTipo[];
-    ciclosPagos: PaymentCycle[];
-  }>;
-
-  const eventosFiltrados = (Array.isArray(parsed.eventosCliente) ? parsed.eventosCliente : []).filter(
-    (ev) => ev?.tipo === "pago"
-  );
-
-  const dataCompat = {
-    clientes: Array.isArray(parsed.clientes) ? parsed.clientes : [],
-    eventosCliente: eventosFiltrados,
-    periodos: Array.isArray(parsed.periodos) ? parsed.periodos : [],
-    feriados: Array.isArray(parsed.feriados) ? parsed.feriados : [],
-    tiposVianda: Array.isArray(parsed.tiposVianda) ? parsed.tiposVianda : [],
-    ciclosPagos: Array.isArray(parsed.ciclosPagos) ? parsed.ciclosPagos : [],
-  };
-
-  await Promise.all([
-    AsyncStorage.setItem(STORAGE_KEYS.CLIENTES, JSON.stringify(dataCompat.clientes)),
-    AsyncStorage.setItem(
-      STORAGE_KEYS.EVENTOS_CLIENTE,
-      JSON.stringify(dataCompat.eventosCliente)
-    ),
-    AsyncStorage.setItem(STORAGE_KEYS.PERIODOS, JSON.stringify(dataCompat.periodos)),
-    AsyncStorage.setItem(STORAGE_KEYS.CICLOS_PAGOS, JSON.stringify(dataCompat.ciclosPagos)),
-    AsyncStorage.setItem(STORAGE_KEYS.FERIADOS, JSON.stringify(dataCompat.feriados)),
-    AsyncStorage.setItem(STORAGE_KEYS.VIANDAS_TIPOS, JSON.stringify(dataCompat.tiposVianda)),
-  ]);
-};
-
 export default function App() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const setUbi = useStore((state) => state.setUbi);
+  const setMisGastosUbi = useStore((state) => state.setMisGastosUbi);
+  const handlingShareRef = React.useRef(false);
+  const lastHandledUriRef = React.useRef<{ uri: string; time: number } | null>(null);
 
   React.useEffect(() => {
     const listener = DeviceEventEmitter.addListener(
       "shareIntentReceived",
       async (payload: SharedBackupPayload) => {
         const uri = payload?.uri;
+        if (!uri) return;
 
-        if (!uri) {
+        const now = Date.now();
+        if (
+          handlingShareRef.current ||
+          (lastHandledUriRef.current &&
+            lastHandledUriRef.current.uri === uri &&
+            now - lastHandledUriRef.current.time < 3000)
+        ) {
           return;
         }
 
-        Alert.alert(
-          "Importar respaldo",
-          "Se reemplazará toda la información actual de MiVianda con el respaldo compartido. ¿Deseas continuar?",
-          [
-            {
-              text: "Cancelar",
-              style: "cancel",
-            },
-            {
-              text: "Importar",
-              onPress: async () => {
-                try {
-                  await importarRespaldoDesdeUri(uri);
-                  Alert.alert("Respaldo importado", "Los datos de MiVianda fueron actualizados.");
-                } catch (error) {
-                  Alert.alert("Error al importar", "No se pudo leer o importar el archivo compartido.");
-                }
+        handlingShareRef.current = true;
+        lastHandledUriRef.current = { uri, time: now };
+
+        try {
+          const content = await readSharedFileText(uri);
+          const detected = detectSharedBackup(content);
+
+          if (detected.kind === "invalid") {
+            handlingShareRef.current = false;
+            Alert.alert("Archivo no compatible", detected.reason);
+            return;
+          }
+
+          if (detected.kind === "mivianda") {
+            const { clientes, eventosCliente, feriados } = detected.data;
+            Alert.alert(
+              "Importar respaldo de MiVianda",
+              `Se detectaron ${clientes.length} cliente(s), ${eventosCliente.length} pago(s) y ${feriados.length} feriado(s).\n\nSe reemplazará la información actual de MiVianda. ¿Deseás continuar?`,
+              [
+                {
+                  text: "Cancelar",
+                  style: "cancel",
+                  onPress: () => {
+                    handlingShareRef.current = false;
+                  },
+                },
+                {
+                  text: "Importar",
+                  onPress: async () => {
+                    try {
+                      await useStore.getState().replaceMiViandaData(detected.data);
+                      Alert.alert("Respaldo importado", "Los datos de MiVianda fueron actualizados.");
+                    } catch {
+                      Alert.alert("Error al importar", "No se pudieron guardar los datos de MiVianda.");
+                    } finally {
+                      handlingShareRef.current = false;
+                    }
+                  },
+                },
+              ],
+              {
+                onDismiss: () => {
+                  handlingShareRef.current = false;
+                },
+              }
+            );
+            return;
+          }
+
+          const { categorias, gastos } = detected.data;
+          Alert.alert(
+            "Importar respaldo de MisGastos",
+            `Se detectaron ${categorias.length} categoría(s) y ${gastos.length} gasto(s).\n\nSe reemplazará la información actual de MisGastos. ¿Deseás continuar?`,
+            [
+              {
+                text: "Cancelar",
+                style: "cancel",
+                onPress: () => {
+                  handlingShareRef.current = false;
+                },
               },
-            },
-          ]
-        );
+              {
+                text: "Importar",
+                onPress: async () => {
+                  try {
+                    await useStore.getState().replaceMisGastosData(categorias, gastos);
+                    Alert.alert("Respaldo importado", "Los datos de MisGastos fueron actualizados.");
+                  } catch {
+                    Alert.alert("Error al importar", "No se pudieron guardar los datos de MisGastos.");
+                  } finally {
+                    handlingShareRef.current = false;
+                  }
+                },
+              },
+            ],
+            {
+              onDismiss: () => {
+                handlingShareRef.current = false;
+              },
+            }
+          );
+        } catch {
+          handlingShareRef.current = false;
+          Alert.alert("Error al importar", "No se pudo leer el archivo compartido.");
+        }
       }
     );
 
     return () => listener.remove();
   }, []);
 
+  const handleStateChange = (state?: NavigationState | PartialState<NavigationState>) => {
+    if (!state) return;
+    const rootRoute = state.routes[state.index ?? 0];
+    if (!rootRoute) return;
+
+    const nestedState =
+      "state" in rootRoute
+        ? (rootRoute.state as NavigationState | PartialState<NavigationState> | undefined)
+        : undefined;
+    const nestedRoute = nestedState?.routes?.[nestedState.index ?? 0];
+    const nestedName = nestedRoute?.name;
+
+    if (rootRoute.name === "MiVianda") {
+      const mapped = mapMiViandaRouteToTab(nestedName ?? "Clientes");
+      if (mapped) setUbi(mapped);
+    } else if (rootRoute.name === "MisGastos") {
+      const mapped = mapMisGastosRouteToTab(nestedName ?? "Resumen");
+      if (mapped) setMisGastosUbi(mapped);
+    }
+  };
+
   return (
-    <PaperProvider theme={appTheme}>
-      <NavigationContainer
-        ref={navigationRef}
-        onStateChange={(state) => {
-          const routeName = getActiveRouteName(state);
-          const mapped = mapRouteToTab(routeName);
-          if (mapped) {
-            setUbi(mapped);
-          }
-        }}
-      >
-        <RootStack.Navigator initialRouteName="Bienvenida" screenOptions={{ headerShown: false }}>
-          <RootStack.Screen name="Bienvenida" component={BienvenidaScreen} />
-          <RootStack.Screen name="MiVianda" component={MiViandaModule} />
-          <RootStack.Screen name="MisGastos" component={MisGastosModule} />
-        </RootStack.Navigator>
-      </NavigationContainer>
-    </PaperProvider>
+    <SafeAreaProvider>
+      <PaperProvider theme={appTheme}>
+        <StatusBar style="dark" />
+        <NavigationContainer ref={navigationRef} onStateChange={handleStateChange}>
+          <RootStack.Navigator initialRouteName="Bienvenida" screenOptions={{ headerShown: false }}>
+            <RootStack.Screen name="Bienvenida" component={BienvenidaScreen} />
+            <RootStack.Screen name="MiVianda" component={MiViandaModule} />
+            <RootStack.Screen name="MisGastos" component={MisGastosModule} />
+          </RootStack.Navigator>
+        </NavigationContainer>
+      </PaperProvider>
+    </SafeAreaProvider>
   );
 }

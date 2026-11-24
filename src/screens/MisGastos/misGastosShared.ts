@@ -30,6 +30,10 @@ import {
   endOfWeek,
   endOfYear,
   format,
+  isSameDay,
+  isSameMonth,
+  isSameWeek,
+  isSameYear,
   isWithinInterval,
   parse,
   startOfDay,
@@ -38,7 +42,6 @@ import {
   startOfYear,
 } from "date-fns";
 
-export type ViewMode = "inicio" | "respaldo";
 export type FilterMode = "dia" | "semana" | "mes" | "anio" | "historico";
 
 export type CategoryFormState = {
@@ -112,12 +115,13 @@ export const getInitialExpenseForm = (categoriaId = ""): ExpenseFormState => {
   };
 };
 
-export const formatCurrency = (amount: number) =>
-  new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency: "ARS",
-    maximumFractionDigits: 2,
-  }).format(amount);
+const currencyFormatter = new Intl.NumberFormat("es-AR", {
+  style: "currency",
+  currency: "ARS",
+  maximumFractionDigits: 2,
+});
+
+export const formatCurrency = (amount: number) => currencyFormatter.format(amount);
 
 const monthYearFormatter = new Intl.DateTimeFormat("es-AR", {
   month: "long",
@@ -132,9 +136,99 @@ export const formatMonthYearLabel = (date: Date) =>
     .replace(/\s+/g, " ")
     .trim();
 
-export const parseExpenseDate = (fecha: string, hora: string) => {
-  const parsed = parse(`${fecha} ${hora}`, "dd/MM/yyyy HH:mm", new Date());
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+/**
+ * Parsea importes soportando formato argentino ("1.500,50", "1500,50") y estándar ("1500.50", "1,500.50").
+ * Retorna null si el importe es inválido o <= 0.
+ */
+export const parseAmountInput = (raw: string): number | null => {
+  const cleaned = raw.replace(/\$/g, "").replace(/\s+/g, "").trim();
+  if (!cleaned) return null;
+  if (/[^0-9.,]/.test(cleaned)) return null;
+
+  const commaCount = (cleaned.match(/,/g) ?? []).length;
+  const dotCount = (cleaned.match(/\./g) ?? []).length;
+
+  let normalized = cleaned;
+
+  if (commaCount > 0 && dotCount > 0) {
+    // El último separador indica el decimal
+    if (cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")) {
+      // Ej: 1.500,50
+      if (commaCount > 1) return null;
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      // Ej: 1,500.50
+      if (dotCount > 1) return null;
+      normalized = cleaned.replace(/,/g, "");
+    }
+  } else if (commaCount > 0) {
+    if (commaCount > 1) {
+      // Solo podría ser separador de miles si todos los grupos tras la primera coma tienen 3 dígitos
+      const parts = cleaned.split(",");
+      if (parts.slice(1).every((p) => p.length === 3)) {
+        normalized = cleaned.replace(/,/g, "");
+      } else {
+        return null;
+      }
+    } else {
+      normalized = cleaned.replace(",", ".");
+    }
+  } else if (dotCount > 1) {
+    const parts = cleaned.split(".");
+    if (parts.slice(1).every((p) => p.length === 3)) {
+      normalized = cleaned.replace(/\./g, "");
+    } else {
+      return null;
+    }
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
+  const num = Number(normalized);
+  if (!Number.isFinite(num) || num <= 0) return null;
+
+  return Math.round(num * 100) / 100;
+};
+
+/**
+ * Formatea dígitos mientras se escribe a dd/MM/yyyy sin impedir borrar.
+ */
+export const formatDateInput = (raw: string): string => {
+  const digits = raw.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+};
+
+/**
+ * Formatea dígitos mientras se escribe a HH:mm sin impedir borrar.
+ */
+export const formatTimeInput = (raw: string): string => {
+  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+};
+
+/**
+ * Valida estrictamente dd/MM/yyyy y HH:mm (incluyendo años bisiestos y horas 00..23 / 00..59).
+ */
+export const parseExpenseDate = (fecha: string, hora: string): Date | null => {
+  const fechaClean = fecha.trim();
+  const horaClean = hora.trim();
+
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(fechaClean)) return null;
+  if (!/^\d{2}:\d{2}$/.test(horaClean)) return null;
+
+  const parsed = parse(`${fechaClean} ${horaClean}`, "dd/MM/yyyy HH:mm", new Date());
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  if (
+    format(parsed, "dd/MM/yyyy") !== fechaClean ||
+    format(parsed, "HH:mm") !== horaClean
+  ) {
+    return null;
+  }
+
+  return parsed;
 };
 
 export const getFilterLabel = (mode: FilterMode, referenceDate: Date) => {
@@ -147,6 +241,22 @@ export const getFilterLabel = (mode: FilterMode, referenceDate: Date) => {
   }
   if (mode === "mes") return formatMonthYearLabel(referenceDate);
   return format(referenceDate, "yyyy");
+};
+
+export const isSamePeriod = (dateA: Date, dateB: Date, mode: FilterMode): boolean => {
+  if (mode === "historico") return true;
+  if (mode === "dia") return isSameDay(dateA, dateB);
+  if (mode === "semana") return isSameWeek(dateA, dateB, { weekStartsOn: 1 });
+  if (mode === "mes") return isSameMonth(dateA, dateB);
+  return isSameYear(dateA, dateB);
+};
+
+export const getResetPeriodLabel = (mode: FilterMode): string => {
+  if (mode === "dia") return "Hoy";
+  if (mode === "semana") return "Esta semana";
+  if (mode === "mes") return "Este mes";
+  if (mode === "anio") return "Este año";
+  return "Actual";
 };
 
 export const isExpenseInFilter = (
@@ -190,7 +300,7 @@ export const shiftReferenceDate = (
 
 export const misGastosDialogStyle = StyleSheet.create({
   dialog: {
-    borderRadius: 10,
+    borderRadius: 16,
     overflow: "hidden",
     backgroundColor: palette.surface,
   },

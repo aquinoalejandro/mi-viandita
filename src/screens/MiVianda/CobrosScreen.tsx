@@ -1,46 +1,56 @@
-import React, { useCallback, useMemo, useState } from "react";
-import { Linking, ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import * as Clipboard from "expo-clipboard";
-import * as Contacts from "expo-contacts";
+import { Contact, requestPermissionsAsync } from "expo-contacts";
+import * as IntentLauncher from "expo-intent-launcher";
 import {
   Button,
   Dialog,
   Divider,
+  Icon,
+  IconButton,
   List,
   Modal,
   Portal,
+  Searchbar,
   Snackbar,
   Text,
+  TextInput,
   useTheme,
 } from "react-native-paper";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { DatePickerModal } from "react-native-paper-dates";
 import { RouteProp, useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
-import { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Client, ClientEvent, Holiday, MiViandaStackParamList, Period } from "../../types/types";
-import { STORAGE_KEYS } from "../../utils/storage";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+
+import { useStore } from "../../store/zustand";
+import { palette } from "../../theme/appTheme";
+import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
+import type { Client, ClientEvent, MiViandaStackParamList, PaymentCycle } from "../../types/types";
 import {
   formatBillingMessage,
-  getBillingStatus,
+  getClientBillingSnapshot,
+  getClientExtraDays,
   getComidasPorCiclo,
-  getClientChargeTiming,
-  getClientCycleDays,
-  getClientCycleStart,
+  type ClientBillingSnapshot,
 } from "../../utils/billing";
-import { DatePickerModal, registerTranslation, es } from "react-native-paper-dates";
-import {
-  buildMealCalendar,
-  countBusinessDaysBetween,
-  getNextBusinessDay,
-  isBusinessDay,
-} from "../../utils/calendar";
-
 import { formatDateLong, formatLocalDate, getTodayString } from "../../utils/date";
-import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
 import { miViandaDialogStyle } from "./miViandaShared";
 
-registerTranslation("es", es);
+type ConfirmPagoState = {
+  visible: boolean;
+  fecha: string;
+  reason: "anterior" | "duplicado";
+};
 
-const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 export default function CobrosScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<MiViandaStackParamList, "Cobros">>();
   const route = useRoute<RouteProp<MiViandaStackParamList, "Cobros">>();
@@ -48,37 +58,150 @@ export default function CobrosScreen() {
   const { width, height } = useWindowDimensions();
   const spacing = getSpacing(width);
   const titleSize = getFontSize(width, 24);
-  const bodySize = getFontSize(width, 16);
+  const bodySize = getFontSize(width, 15);
 
-  const [clientes, setClientes] = useState<Client[]>([]);
-  const [eventos, setEventos] = useState<ClientEvent[]>([]);
-  const [periodos, setPeriodos] = useState<Period[]>([]);
-  const [feriados, setFeriados] = useState<Holiday[]>([]);
+  const setUbi = useStore((state) => state.setUbi);
+  const clientes = useStore((state) => state.miViandaClientes);
+  const eventos = useStore((state) => state.miViandaEventos);
+  const ciclos = useStore((state) => state.miViandaCiclos);
+  const feriados = useStore((state) => state.miViandaFeriados);
+
+  const addMiViandaPayment = useStore((state) => state.addMiViandaPayment);
+  const updateMiViandaPayment = useStore((state) => state.updateMiViandaPayment);
+  const deleteMiViandaPayment = useStore((state) => state.deleteMiViandaPayment);
+  const adjustMiViandaClientDays = useStore((state) => state.adjustMiViandaClientDays);
+  const resetMiViandaClientAdjustment = useStore(
+    (state) => state.resetMiViandaClientAdjustment
+  );
+
   const [clienteSeleccionadoId, setClienteSeleccionadoId] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
   const [expandedClientes, setExpandedClientes] = useState(false);
   const [snackbar, setSnackbar] = useState({ visible: false, message: "" });
   const [fechaPago, setFechaPago] = useState("");
+  const [detallePago, setDetallePago] = useState("");
   const [openDatePago, setOpenDatePago] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<"nuevo-pago" | "editar-pago">(
     "nuevo-pago"
   );
   const [activeModal, setActiveModal] = useState<null | "viandas" | "pagos">(null);
-  const [confirmPagoVisible, setConfirmPagoVisible] = useState(false);
-  const [confirmPagoFecha, setConfirmPagoFecha] = useState<string | null>(null);
+  const [confirmPago, setConfirmPago] = useState<ConfirmPagoState>({
+    visible: false,
+    fecha: "",
+    reason: "anterior",
+  });
   const [confirmDeleteEventVisible, setConfirmDeleteEventVisible] = useState(false);
   const [eventoAEliminar, setEventoAEliminar] = useState<ClientEvent | null>(null);
   const [pagoEnEdicion, setPagoEnEdicion] = useState<ClientEvent | null>(null);
   const [fechaPagoEdicion, setFechaPagoEdicion] = useState("");
+  const [detallePagoEdicion, setDetallePagoEdicion] = useState("");
+  const [mostrarTodosPagos, setMostrarTodosPagos] = useState(false);
+  const [agendandoContacto, setAgendandoContacto] = useState(false);
+  const [contactoAgendado, setContactoAgendado] = useState(false);
+
+  const hoy = getTodayString();
+
+  useEffect(() => {
+    setContactoAgendado(false);
+  }, [clienteSeleccionadoId]);
+
+  useEffect(() => {
+    if (
+      clienteSeleccionadoId &&
+      !clientes.some((c) => c.id === clienteSeleccionadoId)
+    ) {
+      setClienteSeleccionadoId("");
+      setActiveModal(null);
+    }
+  }, [clienteSeleccionadoId, clientes]);
 
   useFocusEffect(
     useCallback(() => {
-      loadData();
-    }, [])
+      setUbi("Cobros");
+      if (!route.params?.clienteId) return;
+
+      setClienteSeleccionadoId(route.params.clienteId);
+      setExpandedClientes(false);
+      setFechaPago("");
+      setDetallePago("");
+      setMostrarTodosPagos(false);
+      setActiveModal(route.params.abrir ?? null);
+      setConfirmDeleteEventVisible(false);
+      setEventoAEliminar(null);
+      setPagoEnEdicion(null);
+      setFechaPagoEdicion("");
+      setDetallePagoEdicion("");
+      navigation.setParams({ clienteId: undefined, abrir: undefined });
+    }, [navigation, route.params?.abrir, route.params?.clienteId, setUbi])
   );
 
   const showMessage = (message: string) => {
     setSnackbar({ visible: true, message });
   };
+
+  const ciclosByClient = useMemo(() => {
+    const map = new Map<string, PaymentCycle[]>();
+    ciclos.forEach((c) => {
+      const arr = map.get(c.clienteId);
+      if (arr) {
+        arr.push(c);
+      } else {
+        map.set(c.clienteId, [c]);
+      }
+    });
+    return map;
+  }, [ciclos]);
+
+  const snapshotsByClient = useMemo(() => {
+    const map = new Map<string, ClientBillingSnapshot>();
+    clientes.forEach((c) => {
+      map.set(
+        c.id,
+        getClientBillingSnapshot(c, ciclosByClient.get(c.id) ?? [], feriados, hoy)
+      );
+    });
+    return map;
+  }, [ciclosByClient, clientes, feriados, hoy]);
+
+  const clienteSeleccionado = useMemo(
+    () => clientes.find((c) => c.id === clienteSeleccionadoId) ?? null,
+    [clienteSeleccionadoId, clientes]
+  );
+
+  const clientesOrdenados = useMemo(() => {
+    const needle = clientSearch.trim().toLowerCase();
+    return [...clientes]
+      .filter((c) => (!needle ? true : c.nombre.toLowerCase().includes(needle)))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [clientSearch, clientes]);
+
+  const ciclosCliente = useMemo(
+    () => (clienteSeleccionado ? ciclosByClient.get(clienteSeleccionado.id) ?? [] : []),
+    [ciclosByClient, clienteSeleccionado]
+  );
+
+  const snapshotSeleccionado = useMemo(
+    () => (clienteSeleccionado ? snapshotsByClient.get(clienteSeleccionado.id) ?? null : null),
+    [clienteSeleccionado, snapshotsByClient]
+  );
+
+  const pagosDelCliente = useMemo(() => {
+    if (!clienteSeleccionadoId) return [];
+    return eventos
+      .filter((ev) => ev.clienteId === clienteSeleccionadoId && ev.tipo === "pago")
+      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+  }, [clienteSeleccionadoId, eventos]);
+
+  const alertasDeuda = useMemo(
+    () => clientes.filter((c) => snapshotsByClient.get(c.id)?.status.estado === "deuda"),
+    [clientes, snapshotsByClient]
+  );
+
+  const alertasProximoCobro = useMemo(
+    () =>
+      clientes.filter((c) => snapshotsByClient.get(c.id)?.status.estado === "proximo-cobro"),
+    [clientes, snapshotsByClient]
+  );
 
   const copiarTexto = async (valor: string, etiqueta: string) => {
     await Clipboard.setStringAsync(valor);
@@ -94,417 +217,192 @@ export default function CobrosScreen() {
         return;
       }
       await Linking.openURL(`tel:${limpio}`);
-    } catch (error) {
+    } catch {
       showMessage("No se pudo iniciar la llamada.");
+    }
+  };
+
+  const abrirAgendaContactos = async () => {
+    try {
+      if (Platform.OS === "android") {
+        const canOpen = await Linking.canOpenURL("content://contacts/people/").catch(() => false);
+        if (canOpen) {
+          await Linking.openURL("content://contacts/people/");
+          return;
+        }
+        await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+          data: "content://contacts/people/",
+        });
+      } else if (Platform.OS === "ios") {
+        const canOpen = await Linking.canOpenURL("contacts:").catch(() => false);
+        if (canOpen) {
+          await Linking.openURL("contacts:");
+        }
+      }
+    } catch {
+      showMessage("No se pudo abrir la app de Contactos directamente.");
     }
   };
 
   const agendarContacto = async () => {
     if (!clienteSeleccionado) return;
     if (!clienteSeleccionado.telefono && !clienteSeleccionado.direccion) {
-      showMessage("El cliente no tiene teléfono ni dirección cargados.");
+      Alert.alert(
+        "Datos incompletos",
+        "El cliente no tiene teléfono ni dirección cargados para poder agendarlo."
+      );
       return;
     }
 
-    const { status } = await Contacts.requestPermissionsAsync();
-    if (status !== "granted") {
-      showMessage("Permiso de contactos denegado.");
-      return;
-    }
-
-    const telefono = clienteSeleccionado.telefono?.trim();
-    const direccion = clienteSeleccionado.direccion?.trim();
-
-    await Contacts.addContactAsync({
-      name: clienteSeleccionado.nombre,
-      contactType: Contacts.ContactTypes.Person,
-      phoneNumbers: telefono
-        ? [
-            {
-              number: telefono,
-              label: "móvil",
-            },
-          ]
-        : undefined,
-      addresses: direccion
-        ? [
-            {
-              street: direccion,
-              label: "casa",
-            },
-          ]
-        : undefined,
-    });
-
-    showMessage("Contacto agregado.");
-  };
-
-  const loadData = async () => {
-    const [dataClientes, dataEventos, dataPeriodos, dataFeriados] = await Promise.all([
-      AsyncStorage.getItem(STORAGE_KEYS.CLIENTES),
-      AsyncStorage.getItem(STORAGE_KEYS.EVENTOS_CLIENTE),
-      AsyncStorage.getItem(STORAGE_KEYS.PERIODOS),
-      AsyncStorage.getItem(STORAGE_KEYS.FERIADOS),
-    ]);
-
-    const parsedClientes = dataClientes ? (JSON.parse(dataClientes) as Client[]) : [];
-    const parsedEventos = dataEventos ? (JSON.parse(dataEventos) as ClientEvent[]) : [];
-    let parsedPeriodos = dataPeriodos ? (JSON.parse(dataPeriodos) as Period[]) : [];
-    const parsedFeriados = dataFeriados ? (JSON.parse(dataFeriados) as Holiday[]) : [];
-
-    if (parsedPeriodos.length === 0 && parsedEventos.length > 0) {
-      const pagosOrdenados = parsedEventos
-        .filter((ev) => ev.tipo === "pago")
-        .sort((a, b) => a.fecha.localeCompare(b.fecha));
-      const ultimoPago = pagosOrdenados[pagosOrdenados.length - 1];
-      if (ultimoPago) {
-        const start = isBusinessDay(new Date(`${ultimoPago.fecha}T00:00:00`), new Set(parsedFeriados.map((f) => f.fecha)))
-          ? ultimoPago.fecha
-          : getNextBusinessDay(ultimoPago.fecha, parsedFeriados);
-        const periodoPagado = {
-          id: createId(),
-          clienteId: ultimoPago.clienteId,
-          tipo: "periodo" as const,
-          estado: "pagado" as const,
-          inicio: start,
-          fin: buildMealCalendar(start, getComidasPorCiclo(), parsedFeriados).slice(-1)[0],
-          pagoId: ultimoPago.id,
-        };
-        const periodoImpago = {
-          id: createId(),
-          clienteId: ultimoPago.clienteId,
-          tipo: "periodo" as const,
-          estado: "impago" as const,
-          inicio: getNextBusinessDay(periodoPagado.fin, parsedFeriados),
-          fin: buildMealCalendar(getNextBusinessDay(periodoPagado.fin, parsedFeriados), getComidasPorCiclo(), parsedFeriados).slice(-1)[0],
-        };
-        parsedPeriodos = [periodoPagado, periodoImpago];
-        await AsyncStorage.setItem(STORAGE_KEYS.PERIODOS, JSON.stringify(parsedPeriodos));
+    setAgendandoContacto(true);
+    try {
+      const { status } = await requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Permiso denegado",
+          "Se requiere permiso para agregar contactos a la agenda del teléfono."
+        );
+        return;
       }
-    }
 
-    const clientesNormalizados = parsedClientes.map((cliente) =>
-      recalcularEstadoCliente(cliente, parsedEventos)
-    );
+      const telefono = clienteSeleccionado.telefono?.trim();
+      const direccion = clienteSeleccionado.direccion?.trim();
 
-    setClientes(clientesNormalizados);
-    setEventos(parsedEventos);
-    setPeriodos(parsedPeriodos);
-    setFeriados(parsedFeriados);
+      const partesNombre = (clienteSeleccionado.nombre || "").trim().split(/\s+/);
+      const givenName = partesNombre[0] || clienteSeleccionado.nombre;
+      const familyName = partesNombre.slice(1).join(" ") || undefined;
 
-    if (JSON.stringify(clientesNormalizados) !== JSON.stringify(parsedClientes)) {
-      await AsyncStorage.setItem(STORAGE_KEYS.CLIENTES, JSON.stringify(clientesNormalizados));
+      await Contact.create({
+        givenName,
+        familyName,
+        phones: telefono
+          ? [
+              {
+                number: telefono,
+                label: "mobile",
+              },
+            ]
+          : undefined,
+        addresses: direccion
+          ? [
+              {
+                street: direccion,
+                label: "home",
+              },
+            ]
+          : undefined,
+      });
+
+      setContactoAgendado(true);
+      showMessage("Contacto agregado.");
+
+      Alert.alert(
+        "¡Contacto agendado!",
+        `"${clienteSeleccionado.nombre}" se guardó exitosamente en los contactos de tu teléfono.`,
+        [
+          {
+            text: "Ver en Contactos",
+            onPress: () => void abrirAgendaContactos(),
+          },
+          {
+            text: "Listo",
+            style: "cancel",
+          },
+        ]
+      );
+    } catch {
+      Alert.alert("Error", "No se pudo agregar el contacto a la agenda.");
+    } finally {
+      setAgendandoContacto(false);
     }
   };
 
-  const saveClientes = async (updated: Client[]) => {
-    setClientes(updated);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEYS.CLIENTES, JSON.stringify(updated));
-    } catch (err) {
-      console.error("saveClientes error", err);
-      showMessage("Error guardando clientes en almacenamiento.");
-      throw err;
-    }
-  };
-
-  const saveEventos = async (updated: ClientEvent[]) => {
-    setEventos(updated);
-    console.log("saveEventos setEventos", updated.length);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEYS.EVENTOS_CLIENTE, JSON.stringify(updated));
-      console.log("saveEventos stored to AsyncStorage");
-    } catch (err) {
-      console.error("saveEventos error", err);
-      showMessage("Error guardando eventos en almacenamiento.");
-      throw err;
-    }
-  };
-
-  const savePeriodos = async (updated: Period[]) => {
-    setPeriodos(updated);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEYS.PERIODOS, JSON.stringify(updated));
-    } catch (err) {
-      console.error("savePeriodos error", err);
-      showMessage("Error guardando periodos en almacenamiento.");
-      throw err;
-    }
-  };
-
-  const recalcularEstadoCliente = (cliente: Client, eventos: ClientEvent[]): Client => {
-    const pagosCliente = eventos
-      .filter((ev) => ev.clienteId === cliente.id && ev.tipo === "pago")
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    const ultimoPago = pagosCliente.length > 0 ? pagosCliente[pagosCliente.length - 1].fecha : cliente.ultimoPago;
-    const totalComidas = cliente.viandas?.reduce((s, v) => s + (v.cantidad ?? 0), 0) ?? 0;
-    const fechaInicioCiclo = ultimoPago ? normalizeStartDate(ultimoPago) : cliente.fechaInicioCiclo;
-    const diasDelCiclo = getClientCycleDays({
-      ...cliente,
-      diasPagadosAcumulados: cliente.diasPagadosAcumulados ?? getComidasPorCiclo(),
-      totalComidas: cliente.totalComidas ?? totalComidas,
-      comidasReponer: cliente.comidasReponer ?? 0,
-    });
-    const diasConsumidosCalculados = fechaInicioCiclo
-      ? Math.min(
-          diasDelCiclo,
-          buildMealCalendar(fechaInicioCiclo, diasDelCiclo, feriados).filter((fecha) => fecha <= hoy)
-            .length
-        )
-      : 0;
-
-    return {
-      ...cliente,
-      ultimoPago: ultimoPago ?? undefined,
-      fechaInicioCiclo,
-      totalComidas: cliente.totalComidas ?? totalComidas,
-      diasConsumidosEnPeriodo: diasConsumidosCalculados,
-      comidasReponer: cliente.comidasReponer ?? 0,
-      diasPagadosAcumulados: cliente.diasPagadosAcumulados ?? getComidasPorCiclo(),
-    };
+  const seleccionarCliente = (id: string) => {
+    setClienteSeleccionadoId(id);
+    setExpandedClientes(false);
+    setFechaPago("");
+    setDetallePago("");
+    setMostrarTodosPagos(false);
+    setPagoEnEdicion(null);
+    setFechaPagoEdicion("");
+    setDetallePagoEdicion("");
   };
 
   const ajustarDiasPeriodo = async (delta: number) => {
     if (!clienteSeleccionado) return;
-
-    const nuevoAjuste = (clienteSeleccionado.ajusteDiasPeriodo ?? 0) + delta;
-    const diasTotalesActuales = getClientCycleDays(clienteSeleccionado);
-    const diasTotalesNuevos = diasTotalesActuales + delta;
-    if (diasTotalesNuevos < 1) {
+    const ok = await adjustMiViandaClientDays(clienteSeleccionado.id, delta);
+    if (!ok) {
       showMessage("El período no puede quedar en menos de 1 día.");
       return;
     }
-
-    const updatedClientes = clientes.map((cliente) => {
-      if (cliente.id !== clienteSeleccionado.id) return cliente;
-      return {
-        ...cliente,
-        ajusteDiasPeriodo: nuevoAjuste,
-      };
-    });
-
-    await saveClientes(updatedClientes);
     showMessage(
       delta > 0
-        ? `Se agregaron ${delta} día(s) al período.`
-        : `Se restaron ${Math.abs(delta)} día(s) al período.`
+        ? `Se agregó ${delta} día al último ciclo.`
+        : `Se restó ${Math.abs(delta)} día al último ciclo.`
     );
   };
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!route.params?.clienteId) return;
-      setClienteSeleccionadoId(route.params.clienteId);
-      setExpandedClientes(false);
-      setFechaPago("");
-      setMostrarTodosPagos(false);
-      setActiveModal(null);
-      setConfirmDeleteEventVisible(false);
-      setEventoAEliminar(null);
-      setPagoEnEdicion(null);
-      setFechaPagoEdicion("");
-      navigation.setParams({ clienteId: undefined, abrir: undefined });
-    }, [navigation, route.params?.clienteId])
-  );
-
-  const clienteSeleccionado = useMemo(
-    () => clientes.find((cliente: Client) => cliente.id === clienteSeleccionadoId) ?? null,
-    [clienteSeleccionadoId, clientes]
-  );
-
-  const eventosDelCliente = useMemo(() => {
-    if (!clienteSeleccionadoId) return [];
-    return eventos
-      .filter((ev) => ev.clienteId === clienteSeleccionadoId)
-      .sort((a, b) => b.fecha.localeCompare(a.fecha));
-  }, [clienteSeleccionadoId, eventos]);
-
-  const periodosDelCliente = useMemo(() => {
-    if (!clienteSeleccionadoId) return [];
-    return periodos
-      .filter((periodo) => periodo.clienteId === clienteSeleccionadoId)
-      .sort((a, b) => a.inicio.localeCompare(b.inicio));
-  }, [clienteSeleccionadoId, periodos]);
-
-  const pagosDelCliente = useMemo(
-    () => eventosDelCliente.filter((ev) => ev.tipo === "pago"),
-    [eventosDelCliente]
-  );
-
-  const [mostrarTodosPagos, setMostrarTodosPagos] = useState(false);
-
-  const alertasDeuda = useMemo(
-    () => clientes.filter((cliente: Client) => getBillingStatus(cliente).estado === "deuda"),
-    [clientes]
-  );
-
-  const alertasProximoCobro = useMemo(
-    () => clientes.filter((cliente: Client) => getBillingStatus(cliente).estado === "proximo-cobro"),
-    [clientes]
-  );
-
-  const hoy = getTodayString();
-
-  const timingCobro = useMemo(() => {
-    if (!clienteSeleccionado) return null;
-    return getClientChargeTiming(clienteSeleccionado, feriados, hoy);
-  }, [clienteSeleccionado, feriados, hoy]);
-
-  const ajustePeriodo = clienteSeleccionado?.ajusteDiasPeriodo ?? 0;
-  const cicloDetalleTexto = useMemo(() => {
-    if (!clienteSeleccionado) return "";
-
-    const partes: string[] = [`${getComidasPorCiclo()} base`];
-    if (ajustePeriodo !== 0) {
-      partes.push(`${ajustePeriodo > 0 ? "+" : ""}${ajustePeriodo} ajuste manual`);
-    }
-
-    return partes.length > 1 ? `(${partes.join(" · ")})` : "";
-  }, [ajustePeriodo, clienteSeleccionado]);
-
-  const esFinDeSemana = (fecha: string) => {
-    const dia = new Date(`${fecha}T00:00:00`).getDay();
-    return dia === 0 || dia === 6;
-  };
-
-  const esFeriado = (fecha: string) => feriados.some((f) => f.fecha === fecha);
-
-  const normalizeStartDate = (fecha: string) => {
-    if (!esFinDeSemana(fecha) && !esFeriado(fecha)) return fecha;
-    return getNextBusinessDay(fecha, feriados);
-  };
-
-  const buildPeriodRecord = (
-    clienteId: string,
-    inicio: string,
-    estado: Period["estado"],
-    pagoId?: string
-  ): Period => ({
-    id: createId(),
-    clienteId,
-    tipo: "periodo",
-    estado,
-    inicio,
-    fin: buildMealCalendar(inicio, getComidasPorCiclo(), feriados).slice(-1)[0] ?? inicio,
-    pagoId,
-    detalle: estado === "pagado" ? "Periodo pagado" : "Periodo pendiente",
-  });
-
-  const rebuildPeriodsForClient = (clienteId: string, pagos: ClientEvent[]): Period[] => {
-    const pagosOrdenados = [...pagos].sort((a, b) => a.fecha.localeCompare(b.fecha));
-    const periodosGenerados: Period[] = [];
-
-    pagosOrdenados.forEach((pago) => {
-      const inicio = normalizeStartDate(pago.fecha);
-
-      const ultimoPeriodo = periodosGenerados[periodosGenerados.length - 1];
-      if (ultimoPeriodo?.estado === "impago") {
-        const periodoPagado: Period = {
-          ...ultimoPeriodo,
-          estado: "pagado",
-          pagoId: pago.id,
-          detalle: "Periodo pagado",
-        };
-
-        periodosGenerados[periodosGenerados.length - 1] = periodoPagado;
-        const siguienteInicio = getNextBusinessDay(periodoPagado.fin, feriados);
-        periodosGenerados.push(buildPeriodRecord(clienteId, siguienteInicio, "impago"));
-        return;
-      }
-
-      const periodoPagado = buildPeriodRecord(clienteId, inicio, "pagado", pago.id);
-      periodosGenerados.push(periodoPagado);
-      const siguienteInicio = getNextBusinessDay(periodoPagado.fin, feriados);
-      periodosGenerados.push(buildPeriodRecord(clienteId, siguienteInicio, "impago"));
-    });
-
-    return periodosGenerados;
-  };
-
-  const procesarPago = async (fecha: string, esHistorico?: boolean) => {
+  const restablecerAjustes = async () => {
     if (!clienteSeleccionado) return;
-    console.log("procesarPago start", { clienteId: clienteSeleccionado.id, fecha, esHistorico });
+    await resetMiViandaClientAdjustment(clienteSeleccionado.id);
+    showMessage("Ajustes de días restablecidos.");
+  };
 
-    const ultimoPagoActual = clienteSeleccionado.ultimoPago;
-    const pagoHistorico = esHistorico ?? Boolean(ultimoPagoActual && fecha < ultimoPagoActual);
+  const procesarPago = async (fecha: string, esHistorico = false) => {
+    if (!clienteSeleccionado) return;
 
-    const pagoEvent: ClientEvent = {
-      id: createId(),
-      clienteId: clienteSeleccionado.id,
-      tipo: "pago",
-      fecha,
-      detalle: "Pago registrado",
-    };
-
-    const updatedEventos = [pagoEvent, ...eventos];
-    const pagosClienteActualizados = updatedEventos
-      .filter((ev) => ev.clienteId === clienteSeleccionado.id && ev.tipo === "pago")
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    const clientesActualizados = clientes.map((cliente) =>
-      cliente.id === clienteSeleccionado.id
-        ? recalcularEstadoCliente(cliente, updatedEventos)
-        : cliente
-    );
-
-    const otrosPeriodos = periodos.filter((periodo) => periodo.clienteId !== clienteSeleccionado.id);
-    const periodosClienteActualizados = rebuildPeriodsForClient(
-      clienteSeleccionado.id,
-      pagosClienteActualizados
-    );
-
-    console.log("procesarPago preparing save", {
-      updatedEventosLength: updatedEventos.length,
-      pagosClienteActualizados: pagosClienteActualizados.length,
-      periodosClienteActualizados: periodosClienteActualizados.length,
-      otrosPeriodos: otrosPeriodos.length,
-    });
-
-    try {
-      await saveEventos(updatedEventos);
-      await savePeriodos([...otrosPeriodos, ...periodosClienteActualizados]);
-      await saveClientes(clientesActualizados);
-      console.log("procesarPago saved", { pagoEventId: pagoEvent.id });
-      setActiveModal("pagos");
-    } catch (err) {
-      console.error("procesarPago error", err);
-      showMessage("Error al procesar el pago. Revisa consola.");
-      return;
-    }
-
+    await addMiViandaPayment(clienteSeleccionado.id, fecha, detallePago);
     setFechaPago("");
-    setConfirmPagoFecha(null);
-    showMessage(pagoHistorico ? "Pago registrado (histórico)." : "Pago registrado.");
+    setDetallePago("");
+    setConfirmPago({ visible: false, fecha: "", reason: "anterior" });
+    showMessage(esHistorico ? "Pago registrado (histórico)." : "Pago registrado.");
   };
 
   const registrarPago = async () => {
     if (!clienteSeleccionado) return;
 
-    const fechaInput = fechaPago.trim();
-    const fecha = fechaInput || hoy; // usar hoy por defecto si no se eligió fecha
-
+    const fecha = fechaPago.trim() || hoy;
     const ultimoPagoActual = clienteSeleccionado.ultimoPago;
     const pagoHistorico = Boolean(ultimoPagoActual && fecha < ultimoPagoActual);
+    const yaExisteMismaFecha = pagosDelCliente.some((p) => p.fecha === fecha);
 
-
-    if (!pagoHistorico && fecha < hoy) {
-      setConfirmPagoFecha(fecha);
-      setConfirmPagoVisible(true);
+    if (pagoHistorico) {
+      setConfirmPago({ visible: true, fecha, reason: "anterior" });
       return;
     }
 
-    await procesarPago(fecha, pagoHistorico);
+    if (yaExisteMismaFecha) {
+      setConfirmPago({ visible: true, fecha, reason: "duplicado" });
+      return;
+    }
+
+    await procesarPago(fecha, false);
   };
 
   const iniciarEdicionPago = (pago: ClientEvent) => {
     setPagoEnEdicion(pago);
     setFechaPagoEdicion(pago.fecha);
+    setDetallePagoEdicion(pago.detalle ?? "");
   };
 
   const cancelarEdicionPago = () => {
     setPagoEnEdicion(null);
     setFechaPagoEdicion("");
+    setDetallePagoEdicion("");
+  };
+
+  const guardarEdicionPago = async () => {
+    if (!clienteSeleccionado || !pagoEnEdicion) return;
+
+    const nuevaFecha = fechaPagoEdicion.trim();
+    if (!nuevaFecha) {
+      showMessage("Elegí una fecha para actualizar el pago.");
+      return;
+    }
+
+    await updateMiViandaPayment(pagoEnEdicion.id, nuevaFecha, detallePagoEdicion);
+    cancelarEdicionPago();
+    showMessage("Pago actualizado.");
   };
 
   const iniciarBorradoEvento = (evento: ClientEvent) => {
@@ -520,69 +418,21 @@ export default function CobrosScreen() {
   const borrarEventoSeleccionado = async () => {
     if (!clienteSeleccionado || !eventoAEliminar) return;
 
-    const eventosActualizados = eventos.filter((ev) => ev.id !== eventoAEliminar.id);
-    const clientesActualizados = clientes.map((cliente) =>
-      cliente.id === clienteSeleccionado.id
-        ? recalcularEstadoCliente(cliente, eventosActualizados)
-        : cliente
-    );
-
-    const pagosClienteActualizados = eventosActualizados
-      .filter((ev) => ev.clienteId === clienteSeleccionado.id && ev.tipo === "pago")
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    const otrosPeriodos = periodos.filter((periodo) => periodo.clienteId !== clienteSeleccionado.id);
-    const periodosClienteActualizados = rebuildPeriodsForClient(
-      clienteSeleccionado.id,
-      pagosClienteActualizados
-    );
-
-    await saveEventos(eventosActualizados);
-    await savePeriodos([...otrosPeriodos, ...periodosClienteActualizados]);
-    await saveClientes(clientesActualizados);
-
+    await deleteMiViandaPayment(eventoAEliminar.id);
     if (pagoEnEdicion?.id === eventoAEliminar.id) cancelarEdicionPago();
-
     cancelarBorradoEvento();
     showMessage("Pago eliminado.");
   };
 
-  const guardarEdicionPago = async () => {
-    if (!clienteSeleccionado || !pagoEnEdicion) return;
-
-    const nuevaFecha = fechaPagoEdicion.trim();
-    if (!nuevaFecha) {
-      showMessage("Elegí una fecha para actualizar el pago.");
-      return;
+  const ajusteTotal = clienteSeleccionado ? getClientExtraDays(clienteSeleccionado) : 0;
+  const cicloDetalleTexto = useMemo(() => {
+    if (!clienteSeleccionado) return "";
+    const partes: string[] = [`${getComidasPorCiclo()} base`];
+    if (ajusteTotal !== 0) {
+      partes.push(`${ajusteTotal > 0 ? "+" : ""}${ajusteTotal} ajuste`);
     }
-
-    const eventosActualizados = eventos.map((ev) =>
-      ev.id === pagoEnEdicion.id ? { ...ev, fecha: nuevaFecha } : ev
-    );
-
-    const pagosClienteActualizados = eventosActualizados
-      .filter((ev) => ev.clienteId === clienteSeleccionado.id && ev.tipo === "pago")
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    const clientesActualizados = clientes.map((cliente) =>
-      cliente.id === clienteSeleccionado.id
-        ? recalcularEstadoCliente(cliente, eventosActualizados)
-        : cliente
-    );
-
-    const otrosPeriodos = periodos.filter((periodo) => periodo.clienteId !== clienteSeleccionado.id);
-    const periodosClienteActualizados = rebuildPeriodsForClient(
-      clienteSeleccionado.id,
-      pagosClienteActualizados
-    );
-
-    await saveEventos(eventosActualizados);
-    await savePeriodos([...otrosPeriodos, ...periodosClienteActualizados]);
-    await saveClientes(clientesActualizados);
-
-    cancelarEdicionPago();
-    showMessage("Fecha de pago actualizada.");
-  };
+    return partes.length > 1 ? `(${partes.join(" · ")})` : "";
+  }, [ajusteTotal, clienteSeleccionado]);
 
   const modalMaxHeight = Math.min(640, Math.round(height * 0.85));
 
@@ -606,7 +456,7 @@ export default function CobrosScreen() {
         },
         title: {
           fontSize: titleSize,
-          fontWeight: "700",
+          fontWeight: "800",
           color: theme.colors.onSurface,
         },
         infoText: {
@@ -617,56 +467,65 @@ export default function CobrosScreen() {
         sectionTitle: {
           fontSize: getFontSize(width, 18),
           fontWeight: "700",
+          marginBottom: 6,
+          color: theme.colors.onSurface,
+        },
+        searchbar: {
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+          backgroundColor: theme.colors.surface,
           marginBottom: 8,
         },
         card: {
-          marginTop: 10,
+          marginTop: 6,
           padding: 14,
-          borderRadius: 12,
+          borderRadius: 16,
           backgroundColor: theme.colors.surface,
           borderWidth: 1,
           borderColor: theme.colors.outline,
+          gap: 6,
         },
         marginTop: {
-          marginTop: 8,
-        },
-        button: {
-          marginTop: 12,
-          marginBottom: 8,
-          borderRadius: 12,
+          marginTop: 6,
         },
         row: {
           flexDirection: "row",
           flexWrap: "wrap",
-          gap: 10,
+          gap: 8,
           alignItems: "center",
-          marginBottom: 8,
+          marginTop: 4,
         },
         emptyText: {
-          marginTop: 12,
+          marginTop: 8,
           color: theme.colors.onSurfaceVariant,
         },
         alertBox: {
-          borderRadius: 12,
+          borderRadius: 14,
           padding: 12,
           borderWidth: 1,
+          gap: 4,
         },
         alertDebt: {
-          backgroundColor: "#ffe3e3",
-          borderColor: "#f3b7b7",
+          backgroundColor: "#fdecec",
+          borderColor: "#f5b7b1",
         },
         alertSoon: {
-          backgroundColor: "#fff1cc",
-          borderColor: "#f2d58a",
+          backgroundColor: "#fef5e7",
+          borderColor: "#f8c471",
         },
         alertTitle: {
           fontWeight: "700",
-          marginBottom: 4,
+          marginBottom: 2,
+        },
+        alertLinkText: {
+          fontSize: getFontSize(width, 13),
+          textDecorationLine: "underline",
         },
         quickCard: {
-          marginTop: 10,
-          padding: 12,
-          borderRadius: 12,
+          marginTop: 4,
+          padding: 14,
+          borderRadius: 16,
           backgroundColor: theme.colors.surface,
           borderWidth: 1,
           borderColor: theme.colors.outline,
@@ -677,70 +536,259 @@ export default function CobrosScreen() {
           maxHeight: modalMaxHeight,
           alignSelf: "center",
           backgroundColor: theme.colors.surface,
-          borderRadius: 10,
-          padding: 16,
+          borderRadius: 16,
+          padding: 0,
           borderWidth: 1,
           borderColor: theme.colors.outline,
+          overflow: "hidden",
         },
         modalHeader: {
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 8,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+          backgroundColor: theme.colors.surface,
+        },
+        modalHeaderTitleBox: {
+          flex: 1,
+          paddingRight: 8,
         },
         modalTitle: {
           fontSize: getFontSize(width, 18),
           fontWeight: "700",
+          color: theme.colors.onSurface,
+        },
+        modalSubtitle: {
+          fontSize: getFontSize(width, 13),
+          color: theme.colors.onSurfaceVariant,
+          marginTop: 2,
         },
         modalContent: {
-          paddingBottom: 8,
-          gap: 12,
+          padding: 16,
+          gap: 14,
         },
         modalSection: {
-          gap: 6,
+          gap: 8,
+        },
+        modalSectionCard: {
+          backgroundColor: theme.colors.surface,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+          padding: 14,
+          gap: 12,
+        },
+        modalSectionHeaderRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
         },
         modalSectionTitle: {
           fontSize: getFontSize(width, 16),
           fontWeight: "700",
-        },
-        editHint: {
-          color: theme.colors.onSurfaceVariant,
-        },
-        editStateRow: {
-          flexDirection: "row",
-          flexWrap: "wrap",
-          gap: 8,
-        },
-        editStateButton: {
-          minWidth: 140,
-        },
-        editStateOption: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
-        },
-        editStateLabel: {
-          flex: 1,
           color: theme.colors.onSurface,
         },
-        editDivider: {
-          marginVertical: 10,
+        statusBanner: {
+          borderRadius: 10,
+          borderWidth: 1,
+          padding: 12,
+          gap: 6,
         },
-        detailRow: {
+        statusBannerHeader: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+        },
+        statusBannerTitle: {
+          fontSize: getFontSize(width, 14),
+          fontWeight: "700",
+        },
+        statusBannerDesc: {
+          fontSize: getFontSize(width, 13),
+          lineHeight: getLineHeight(getFontSize(width, 13)),
+        },
+        metricGrid: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 10,
+        },
+        metricItem: {
+          flexGrow: 1,
+          flexBasis: width < 420 ? "100%" : "47%",
+          backgroundColor: theme.colors.surfaceVariant,
+          borderRadius: 10,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+          padding: 10,
+          gap: 4,
+        },
+        metricHeader: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+        },
+        metricLabel: {
+          fontSize: getFontSize(width, 12),
+          color: theme.colors.onSurfaceVariant,
+          fontWeight: "500",
+        },
+        metricValue: {
+          fontSize: getFontSize(width, 14),
+          fontWeight: "700",
+          color: theme.colors.onSurface,
+        },
+        metricSubtext: {
+          fontSize: getFontSize(width, 11),
+          color: theme.colors.onSurfaceVariant,
+        },
+        progressBarBackground: {
+          height: 6,
+          backgroundColor: theme.colors.outline,
+          borderRadius: 3,
+          overflow: "hidden",
+          marginVertical: 2,
+        },
+        progressBarFill: {
+          height: "100%",
+          borderRadius: 3,
+        },
+        viandasList: {
+          gap: 8,
+        },
+        viandaRow: {
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 8,
-          flexWrap: "wrap",
+          paddingVertical: 8,
+          paddingHorizontal: 10,
+          backgroundColor: theme.colors.surfaceVariant,
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
         },
-        detailValue: {
-          flexShrink: 1,
+        viandaTypeInfo: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          flex: 1,
+        },
+        viandaTypeName: {
+          fontSize: getFontSize(width, 14),
+          fontWeight: "600",
           color: theme.colors.onSurface,
+        },
+        viandaQtyBadge: {
+          backgroundColor: palette.primarySoft,
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: 12,
+        },
+        viandaQtyText: {
+          fontSize: getFontSize(width, 12),
+          fontWeight: "700",
+          color: palette.primary,
+        },
+        emptyViandasBox: {
+          padding: 12,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: theme.colors.surfaceVariant,
+          borderRadius: 8,
+        },
+        emptyViandasText: {
+          fontSize: getFontSize(width, 13),
+          color: theme.colors.onSurfaceVariant,
+          fontStyle: "italic",
+        },
+        viandasTotalBox: {
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: 10,
+          backgroundColor: theme.colors.primaryContainer,
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+        },
+        viandasTotalLabel: {
+          fontSize: getFontSize(width, 13),
+          color: palette.text,
+          fontWeight: "600",
+        },
+        viandasTotalCount: {
+          fontSize: getFontSize(width, 13),
+          color: palette.primary,
+          fontWeight: "700",
+        },
+        viandasNotesBox: {
+          flexDirection: "row",
+          alignItems: "flex-start",
+          gap: 6,
+          padding: 10,
+          backgroundColor: theme.colors.surfaceVariant,
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+        },
+        viandasNotesText: {
+          fontSize: getFontSize(width, 12),
+          color: theme.colors.onSurfaceVariant,
+          flex: 1,
+          lineHeight: getLineHeight(getFontSize(width, 12)),
+        },
+        contactRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          backgroundColor: theme.colors.surfaceVariant,
+          borderRadius: 10,
+          borderWidth: 1,
+          borderColor: theme.colors.outline,
+          padding: 10,
+          gap: 8,
+        },
+        contactIconWrap: {
+          width: 32,
+          height: 32,
+          borderRadius: 16,
+          backgroundColor: palette.primarySoft,
+          alignItems: "center",
+          justifyContent: "center",
+        },
+        contactInfo: {
+          flex: 1,
+        },
+        contactFieldLabel: {
+          fontSize: getFontSize(width, 11),
+          color: theme.colors.onSurfaceVariant,
+          marginBottom: 1,
+        },
+        contactFieldValue: {
+          fontSize: getFontSize(width, 13),
+          color: theme.colors.onSurface,
+          fontWeight: "500",
+        },
+        contactFieldEmpty: {
+          fontSize: getFontSize(width, 13),
+          color: theme.colors.onSurfaceVariant,
+          fontStyle: "italic",
+        },
+        contactButtonsRow: {
+          flexDirection: "row",
+          gap: 10,
+          marginTop: 4,
+        },
+        actionBtn: {
+          flex: 1,
+          borderRadius: 10,
         },
         historyActions: {
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
+          gap: 4,
+        },
+        input: {
+          backgroundColor: theme.colors.surface,
         },
       }),
     [
@@ -751,156 +799,257 @@ export default function CobrosScreen() {
       theme.colors.onSurface,
       theme.colors.onSurfaceVariant,
       theme.colors.outline,
+      theme.colors.primaryContainer,
       theme.colors.surface,
+      theme.colors.surfaceVariant,
       titleSize,
       width,
     ]
   );
 
+  const effectiveFechaNueva = fechaPago.trim() || hoy;
+
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.content}>
           <Text style={styles.title}>Cobros</Text>
-           <Text style={styles.infoText}>
-             Regla activa: cada {getComidasPorCiclo()} días corresponde un cobro. Sábado, domingo y feriados no cuentan.
-           </Text>
+          <Text style={styles.infoText}>
+            Regla activa: cada {getComidasPorCiclo()} días hábiles corresponde un cobro. Sábado,
+            domingo y feriados no cuentan.
+          </Text>
 
           {alertasDeuda.length > 0 && (
             <View style={[styles.alertBox, styles.alertDebt]}>
-              <Text style={styles.alertTitle}>Deuda actual</Text>
-              {alertasDeuda.map((cliente: Client) => (
-                <Text key={cliente.id}>
-                  {cliente.nombre}: {formatBillingMessage(cliente)}
-                </Text>
+              <Text style={[styles.alertTitle, { color: palette.danger }]}>
+                Deuda actual ({alertasDeuda.length})
+              </Text>
+              {alertasDeuda.map((cliente) => (
+                <Pressable key={cliente.id} onPress={() => seleccionarCliente(cliente.id)}>
+                  <Text style={[styles.alertLinkText, { color: palette.danger }]}>
+                    {cliente.nombre}:{" "}
+                    {formatBillingMessage(
+                      cliente,
+                      ciclosByClient.get(cliente.id) ?? [],
+                      feriados,
+                      hoy
+                    )}
+                  </Text>
+                </Pressable>
               ))}
             </View>
           )}
 
           {alertasProximoCobro.length > 0 && (
             <View style={[styles.alertBox, styles.alertSoon]}>
-              <Text style={styles.alertTitle}>Próximo cobro</Text>
-              {alertasProximoCobro.map((cliente: Client) => (
-                <Text key={cliente.id}>
-                  {cliente.nombre}: {formatBillingMessage(cliente)}
-                </Text>
+              <Text style={[styles.alertTitle, { color: palette.warning }]}>
+                Próximo cobro ({alertasProximoCobro.length})
+              </Text>
+              {alertasProximoCobro.map((cliente) => (
+                <Pressable key={cliente.id} onPress={() => seleccionarCliente(cliente.id)}>
+                  <Text style={[styles.alertLinkText, { color: palette.warning }]}>
+                    {cliente.nombre}:{" "}
+                    {formatBillingMessage(
+                      cliente,
+                      ciclosByClient.get(cliente.id) ?? [],
+                      feriados,
+                      hoy
+                    )}
+                  </Text>
+                </Pressable>
               ))}
             </View>
           )}
 
-           <Button
-             mode="contained"
-             onPress={registrarPago}
-             style={styles.button}
-             buttonColor={theme.colors.secondary}
-             contentStyle={{ minHeight: 48 }}
-           >
-             Registrar pago
-           </Button>
-
           <List.Accordion
             title={
-              clienteSeleccionado ? `Cliente: ${clienteSeleccionado.nombre}` : "Seleccionar cliente"
+              clienteSeleccionado
+                ? `Cliente: ${clienteSeleccionado.nombre}`
+                : "Seleccionar cliente"
             }
             expanded={expandedClientes}
             onPress={() => setExpandedClientes((prev) => !prev)}
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: theme.colors.outline,
+            }}
           >
-            {clientes.map((cliente: Client) => (
-              <List.Item
-                key={cliente.id}
-                title={cliente.nombre}
-                onPress={() => {
-                  setClienteSeleccionadoId(cliente.id);
-                  setExpandedClientes(false);
-                  setFechaPago("");
-                  setMostrarTodosPagos(false);
-                  setPagoEnEdicion(null);
-                  setFechaPagoEdicion("");
-                }}
+            <View style={{ padding: 10 }}>
+              <Searchbar
+                placeholder="Buscar cliente..."
+                value={clientSearch}
+                onChangeText={setClientSearch}
+                style={styles.searchbar}
+                elevation={0}
               />
-            ))}
+              {clientesOrdenados.length === 0 ? (
+                <Text style={styles.emptyText}>No hay clientes que coincidan.</Text>
+              ) : (
+                clientesOrdenados.map((cliente) => {
+                  const snap = snapshotsByClient.get(cliente.id);
+                  const desc =
+                    snap?.status.estado === "deuda"
+                      ? `Deuda (${snap.status.diasAtraso} d. atraso)`
+                      : snap?.status.estado === "proximo-cobro"
+                      ? `Próximo cobro (${snap.status.restante} d.)`
+                      : snap?.status.estado === "al-dia"
+                      ? `Al día (${snap.status.restante} d. disp.)`
+                      : "Sin pagos";
+
+                  return (
+                    <List.Item
+                      key={cliente.id}
+                      title={cliente.nombre}
+                      description={desc}
+                      onPress={() => seleccionarCliente(cliente.id)}
+                      right={(props) =>
+                        clienteSeleccionado?.id === cliente.id ? (
+                          <List.Icon {...props} icon="check" color={theme.colors.primary} />
+                        ) : null
+                      }
+                    />
+                  );
+                })
+              )}
+            </View>
           </List.Accordion>
 
-          {clienteSeleccionado ? (
+          {clienteSeleccionado && snapshotSeleccionado ? (
             <>
               <View style={styles.card}>
-                <Text style={styles.sectionTitle}>Resumen</Text>
+                <Text style={styles.sectionTitle}>Resumen de {clienteSeleccionado.nombre}</Text>
                 {clienteSeleccionado.ultimoPago ? (
                   <>
                     <Text>
-                       Días consumidos en el ciclo: {clienteSeleccionado.diasConsumidosEnPeriodo}
+                      Ciclo actual: {snapshotSeleccionado.diasConsumidosCicloActual} de{" "}
+                      {snapshotSeleccionado.diasTotalesCicloActual} días {cicloDetalleTexto}
                     </Text>
-                    <Text>
-                      Último pago: {formatDateLong(clienteSeleccionado.ultimoPago)}
-                    </Text>
-                    {timingCobro?.fechaVencimiento && (
+                    {snapshotSeleccionado.futureCyclesCount > 0 ? (
                       <Text>
-                        Fecha estimada próximo cobro: {formatDateLong(timingCobro.fechaVencimiento)}
-                        {timingCobro.diasAtraso > 0 ? " (vencido)" : ""}
+                        Ciclos pagados por adelantado: {snapshotSeleccionado.futureCyclesCount} (
+                        {snapshotSeleccionado.diasDisponiblesTotales} días hábiles totales
+                        disponibles)
                       </Text>
-                    )}
+                    ) : null}
+                    <Text>Último pago: {formatDateLong(clienteSeleccionado.ultimoPago)}</Text>
+                    {snapshotSeleccionado.timing?.fechaVencimiento ? (
+                      <Text>
+                        Fecha de cobro:{" "}
+                        {formatDateLong(snapshotSeleccionado.timing.fechaVencimiento)}
+                        {snapshotSeleccionado.timing.diasAtraso > 0
+                          ? ` (vencido hace ${snapshotSeleccionado.timing.diasAtraso} d.)`
+                          : ""}
+                      </Text>
+                    ) : null}
                     <Text style={styles.marginTop}>
-                      Ciclo actual: {getClientCycleDays(clienteSeleccionado)} días {cicloDetalleTexto}
-                    </Text>
-                    <Text>
-                      Ajuste manual: {ajustePeriodo > 0 ? `+${ajustePeriodo}` : ajustePeriodo} día(s)
+                      Ajuste manual al último ciclo:{" "}
+                      {ajusteTotal > 0 ? `+${ajusteTotal}` : ajusteTotal} día(s)
                     </Text>
                     <View style={styles.row}>
                       <Button
                         mode="outlined"
-                        onPress={() => ajustarDiasPeriodo(-1)}
+                        onPress={() => void ajustarDiasPeriodo(-1)}
                         contentStyle={{ minHeight: 40 }}
                       >
                         -1 día
                       </Button>
                       <Button
                         mode="outlined"
-                        onPress={() => ajustarDiasPeriodo(1)}
+                        onPress={() => void ajustarDiasPeriodo(1)}
                         contentStyle={{ minHeight: 40 }}
                       >
                         +1 día
                       </Button>
+                      {ajusteTotal !== 0 ? (
+                        <Button
+                          mode="text"
+                          onPress={() => void restablecerAjustes()}
+                          contentStyle={{ minHeight: 40 }}
+                        >
+                          Restablecer
+                        </Button>
+                      ) : null}
                     </View>
-                    <Text style={styles.marginTop}>{formatBillingMessage(clienteSeleccionado)}</Text>
+                    <Text style={[styles.marginTop, { fontWeight: "700" }]}>
+                      {formatBillingMessage(
+                        clienteSeleccionado,
+                        ciclosCliente,
+                        feriados,
+                        hoy
+                      )}
+                    </Text>
                   </>
                 ) : (
                   <Text>Sin pagos registrados. El ciclo inicia con el primer pago.</Text>
                 )}
+
+                <View style={[styles.row, { marginTop: 10 }]}>
+                  <Button
+                    mode="contained"
+                    icon="cash-plus"
+                    onPress={() => setActiveModal("pagos")}
+                    buttonColor={theme.colors.secondary}
+                    style={{ flex: 1, borderRadius: 12 }}
+                    contentStyle={{ minHeight: 44 }}
+                  >
+                    Registrar pago
+                  </Button>
+                  <Button
+                    mode="outlined"
+                    icon="food"
+                    onPress={() => setActiveModal("viandas")}
+                    style={{ flex: 1, borderRadius: 12 }}
+                    contentStyle={{ minHeight: 44 }}
+                  >
+                    Ver detalles
+                  </Button>
+                </View>
               </View>
 
               <View style={styles.quickCard}>
-                <Text style={styles.sectionTitle}>Abrir detalles</Text>
+                <Text style={styles.sectionTitle}>Accesos rápidos</Text>
                 <List.Item
                   title="Viandas y cobros"
-                  description="Configuración y estado de cobro"
+                  description="Detalle completo, viandas y contacto del cliente"
+                  left={(props) => <List.Icon {...props} icon="card-account-details-outline" />}
+                  right={(props) => <List.Icon {...props} icon="chevron-right" />}
                   onPress={() => setActiveModal("viandas")}
                 />
                 <Divider />
                 <List.Item
-                  title="Pagos"
-                  description="Registrar pago e historial"
+                  title="Pagos e historial"
+                  description={`${pagosDelCliente.length} ${
+                    pagosDelCliente.length === 1 ? "pago registrado" : "pagos registrados"
+                  }`}
+                  left={(props) => <List.Icon {...props} icon="receipt" />}
+                  right={(props) => <List.Icon {...props} icon="chevron-right" />}
                   onPress={() => setActiveModal("pagos")}
                 />
               </View>
             </>
           ) : (
-            <Text style={styles.emptyText}>Seleccioná un cliente para gestionar cobros.</Text>
+            <Text style={styles.emptyText}>
+              {clientes.length === 0
+                ? "Todavía no hay clientes creados."
+                : "Seleccioná un cliente para gestionar cobros."}
+            </Text>
           )}
         </View>
       </ScrollView>
-
-      <Snackbar
-        visible={snackbar.visible}
-        onDismiss={() => setSnackbar({ visible: false, message: "" })}
-        duration={2500}
-      >
-        {snackbar.message}
-      </Snackbar>
 
       <DatePickerModal
         locale="es"
         mode="single"
         visible={openDatePago}
+        date={
+          datePickerTarget === "editar-pago" && fechaPagoEdicion
+            ? new Date(`${fechaPagoEdicion}T00:00:00`)
+            : fechaPago
+            ? new Date(`${fechaPago}T00:00:00`)
+            : new Date()
+        }
         onDismiss={() => setOpenDatePago(false)}
         onConfirm={(params) => {
           setOpenDatePago(false);
@@ -922,98 +1071,370 @@ export default function CobrosScreen() {
           contentContainerStyle={styles.modalContainer}
         >
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Viandas y cobros</Text>
-            <Button mode="text" onPress={() => setActiveModal(null)}>
-              Cerrar
-            </Button>
+            <View style={styles.modalHeaderTitleBox}>
+              <Text style={styles.modalTitle}>Viandas y cobros</Text>
+              {clienteSeleccionado && (
+                <Text style={styles.modalSubtitle} numberOfLines={1}>
+                  {clienteSeleccionado.nombre}
+                </Text>
+              )}
+            </View>
+            <IconButton
+              icon="close"
+              size={22}
+              onPress={() => setActiveModal(null)}
+              accessibilityLabel="Cerrar modal"
+            />
           </View>
+          <Divider />
+
           <ScrollView contentContainerStyle={styles.modalContent}>
-            {clienteSeleccionado && (
-              <>
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalSectionTitle}>Viandas configuradas</Text>
-                  {clienteSeleccionado.viandas.map((item) => (
-                    <Text key={item.id}>
-                      - {item.tipo}: {item.cantidad}
-                    </Text>
-                  ))}
-                  <Text style={styles.marginTop}>
-                    Total por día: {clienteSeleccionado.viandas.reduce((total, item) => total + item.cantidad, 0)} comida(s)
-                  </Text>
-                </View>
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalSectionTitle}>Estado de cobro</Text>
-                  <Text>                       Días consumidos en el ciclo: {clienteSeleccionado.diasConsumidosEnPeriodo}</Text>
-                  <Text>
-                    {clienteSeleccionado.ultimoPago
-                      ? `Último pago: ${formatDateLong(clienteSeleccionado.ultimoPago)}`
-                      : "Sin pagos registrados"}
-                  </Text>
-                  {timingCobro?.fechaVencimiento && (
-                    <Text>
-                      Fecha estimada próximo cobro: {formatDateLong(timingCobro.fechaVencimiento)}
-                      {timingCobro.diasAtraso > 0 ? " (vencido)" : ""}
-                    </Text>
-                  )}
-                  <Text>{formatBillingMessage(clienteSeleccionado)}</Text>
-                  <Text>
-                    Ajuste manual del período:{" "}
-                    {ajustePeriodo > 0 ? `+${ajustePeriodo}` : ajustePeriodo} día(s)
-                  </Text>
-                </View>
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalSectionTitle}>Detalles del cliente</Text>
-                  {clienteSeleccionado.direccion ? (
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailValue}>Dirección: {clienteSeleccionado.direccion}</Text>
-                      <Button
-                        mode="text"
-                        onPress={() => copiarTexto(clienteSeleccionado.direccion ?? "", "Dirección")}
+            {clienteSeleccionado &&
+              snapshotSeleccionado &&
+              (() => {
+                const billingStatus = snapshotSeleccionado.status;
+                const timingCobro = snapshotSeleccionado.timing;
+                const totalViandasDia = clienteSeleccionado.viandas.reduce(
+                  (total, item) => total + (item.cantidad || 0),
+                  0
+                );
+                const cicloDiasTotal = Math.max(
+                  1,
+                  snapshotSeleccionado.diasTotalesCicloActual || getComidasPorCiclo()
+                );
+                const diasConsumidos = snapshotSeleccionado.diasConsumidosCicloActual;
+                const diasRestantes = snapshotSeleccionado.diasDisponiblesTotales;
+                const porcentajeConsumo = Math.min(
+                  100,
+                  Math.round((diasConsumidos / cicloDiasTotal) * 100)
+                );
+
+                const isDeuda = billingStatus.estado === "deuda";
+                const isProximo = billingStatus.estado === "proximo-cobro";
+                const isSinPagos = billingStatus.estado === "sin-pagos";
+
+                const statusColor = isDeuda
+                  ? palette.danger
+                  : isProximo
+                  ? palette.warning
+                  : isSinPagos
+                  ? palette.muted
+                  : palette.success;
+
+                const statusBg = isDeuda
+                  ? "#FDF2F2"
+                  : isProximo
+                  ? "#FFFBEB"
+                  : isSinPagos
+                  ? theme.colors.surfaceVariant
+                  : "#F0FDF4";
+
+                const statusBorder = isDeuda
+                  ? "#FCA5A5"
+                  : isProximo
+                  ? "#FCD34D"
+                  : isSinPagos
+                  ? theme.colors.outline
+                  : "#86EFAC";
+
+                const statusIcon = isDeuda
+                  ? "alert-circle-outline"
+                  : isProximo
+                  ? "clock-alert-outline"
+                  : isSinPagos
+                  ? "cash-remove"
+                  : "check-circle-outline";
+
+                const statusTitle = isDeuda
+                  ? `Con deuda (${billingStatus.ciclosDeuda} ciclo${
+                      billingStatus.ciclosDeuda > 1 ? "s" : ""
+                    })`
+                  : isProximo
+                  ? "Próximo cobro por vencer"
+                  : isSinPagos
+                  ? "Sin pagos registrados"
+                  : "Al día";
+
+                return (
+                  <>
+                    <View style={styles.modalSectionCard}>
+                      <View style={styles.modalSectionHeaderRow}>
+                        <Icon source="cash-clock" size={20} color={palette.primary} />
+                        <Text style={styles.modalSectionTitle}>Estado de cobro</Text>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.statusBanner,
+                          { backgroundColor: statusBg, borderColor: statusBorder },
+                        ]}
                       >
-                        Copiar
-                      </Button>
+                        <View style={styles.statusBannerHeader}>
+                          <Icon source={statusIcon} size={20} color={statusColor} />
+                          <Text style={[styles.statusBannerTitle, { color: statusColor }]}>
+                            {statusTitle}
+                          </Text>
+                        </View>
+                        <Text style={[styles.statusBannerDesc, { color: statusColor }]}>
+                          {formatBillingMessage(
+                            clienteSeleccionado,
+                            ciclosCliente,
+                            feriados,
+                            hoy
+                          )}
+                        </Text>
+                      </View>
+
+                      <View style={styles.metricGrid}>
+                        <View style={styles.metricItem}>
+                          <View style={styles.metricHeader}>
+                            <Icon source="calendar-clock" size={16} color={palette.secondary} />
+                            <Text style={styles.metricLabel}>Próximo cobro</Text>
+                          </View>
+                          <Text style={styles.metricValue}>
+                            {timingCobro?.fechaVencimiento
+                              ? formatDateLong(timingCobro.fechaVencimiento)
+                              : "Sin calcular"}
+                          </Text>
+                          {timingCobro?.fechaVencimiento && (
+                            <Text
+                              style={[
+                                styles.metricSubtext,
+                                timingCobro.diasAtraso > 0
+                                  ? { color: palette.danger, fontWeight: "600" }
+                                  : timingCobro.diasPendientes === 0
+                                  ? { color: palette.warning, fontWeight: "600" }
+                                  : { color: palette.muted },
+                              ]}
+                            >
+                              {timingCobro.diasAtraso > 0
+                                ? `Vencido hace ${timingCobro.diasAtraso} día(s)`
+                                : timingCobro.diasPendientes === 0
+                                ? "Vence hoy"
+                                : `En ${timingCobro.diasPendientes} día(s) hábiles`}
+                            </Text>
+                          )}
+                        </View>
+
+                        <View style={styles.metricItem}>
+                          <View style={styles.metricHeader}>
+                            <Icon source="chart-donut" size={16} color={palette.secondary} />
+                            <Text style={styles.metricLabel}>Días del ciclo</Text>
+                          </View>
+                          <Text style={styles.metricValue}>
+                            {isSinPagos
+                              ? "0 días"
+                              : `${diasConsumidos} de ${snapshotSeleccionado.diasTotalesCicloActual} días`}
+                          </Text>
+                          <View style={styles.progressBarBackground}>
+                            <View
+                              style={[
+                                styles.progressBarFill,
+                                {
+                                  width: `${Math.min(100, Math.max(0, porcentajeConsumo))}%`,
+                                  backgroundColor: isDeuda
+                                    ? palette.danger
+                                    : isProximo
+                                    ? palette.warning
+                                    : palette.primary,
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.metricSubtext}>
+                            {diasRestantes > 0
+                              ? `${diasRestantes} día(s) disponibles totales`
+                              : isSinPagos
+                              ? "Pendiente de primer pago"
+                              : "Ciclo finalizado"}
+                          </Text>
+                        </View>
+
+                        <View style={styles.metricItem}>
+                          <View style={styles.metricHeader}>
+                            <Icon source="receipt" size={16} color={palette.secondary} />
+                            <Text style={styles.metricLabel}>Último pago</Text>
+                          </View>
+                          <Text style={styles.metricValue}>
+                            {clienteSeleccionado.ultimoPago
+                              ? formatDateLong(clienteSeleccionado.ultimoPago)
+                              : "Sin pagos registrados"}
+                          </Text>
+                        </View>
+
+                        <View style={styles.metricItem}>
+                          <View style={styles.metricHeader}>
+                            <Icon source="tune-vertical" size={16} color={palette.secondary} />
+                            <Text style={styles.metricLabel}>Ajuste manual</Text>
+                          </View>
+                          <Text style={styles.metricValue}>
+                            {ajusteTotal > 0 ? `+${ajusteTotal}` : ajusteTotal} día(s)
+                          </Text>
+                          <Text style={styles.metricSubtext}>
+                            Base {getComidasPorCiclo()} días hábiles
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                  ) : (
-                    <Text>Dirección: Sin cargar</Text>
-                  )}
-                  {clienteSeleccionado.telefono ? (
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailValue}>Teléfono: {clienteSeleccionado.telefono}</Text>
-                      <Button
-                        mode="text"
-                        onPress={() => copiarTexto(clienteSeleccionado.telefono ?? "", "Teléfono")}
-                      >
-                        Copiar
-                      </Button>
+
+                    <View style={styles.modalSectionCard}>
+                      <View style={styles.modalSectionHeaderRow}>
+                        <Icon source="food" size={20} color={palette.primary} />
+                        <Text style={styles.modalSectionTitle}>Viandas configuradas</Text>
+                      </View>
+
+                      {clienteSeleccionado.viandas.length === 0 ? (
+                        <View style={styles.emptyViandasBox}>
+                          <Text style={styles.emptyViandasText}>
+                            No hay viandas asignadas a este cliente.
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.viandasList}>
+                          {clienteSeleccionado.viandas.map((item) => (
+                            <View key={item.id} style={styles.viandaRow}>
+                              <View style={styles.viandaTypeInfo}>
+                                <Icon
+                                  source="silverware-fork-knife"
+                                  size={16}
+                                  color={palette.primary}
+                                />
+                                <Text style={styles.viandaTypeName}>{item.tipo}</Text>
+                              </View>
+                              <View style={styles.viandaQtyBadge}>
+                                <Text style={styles.viandaQtyText}>
+                                  {item.cantidad} {item.cantidad === 1 ? "vianda" : "viandas"}
+                                </Text>
+                              </View>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+
+                      <View style={styles.viandasTotalBox}>
+                        <Text style={styles.viandasTotalLabel}>Total por día:</Text>
+                        <Text style={styles.viandasTotalCount}>
+                          {totalViandasDia} {totalViandasDia === 1 ? "comida" : "comidas"} / día
+                        </Text>
+                      </View>
+
+                      {Boolean(clienteSeleccionado.detalleEspecifico?.trim()) && (
+                        <View style={styles.viandasNotesBox}>
+                          <Icon source="information-outline" size={16} color={palette.muted} />
+                          <Text style={styles.viandasNotesText}>
+                            {clienteSeleccionado.detalleEspecifico}
+                          </Text>
+                        </View>
+                      )}
                     </View>
-                  ) : (
-                    <Text>Teléfono: Sin cargar</Text>
-                  )}
-                  <View style={styles.row}>
-                    <Button
-                      mode="outlined"
-                      onPress={() => llamarTelefono(clienteSeleccionado.telefono ?? "")}
-                      disabled={!clienteSeleccionado.telefono}
-                      contentStyle={{ minHeight: 44 }}
-                    >
-                      Llamar
-                    </Button>
-                    <Button
-                      mode="outlined"
-                      onPress={agendarContacto}
-                      disabled={!clienteSeleccionado.telefono && !clienteSeleccionado.direccion}
-                      contentStyle={{ minHeight: 44 }}
-                    >
-                      Agendar
-                    </Button>
-                  </View>
-                </View>
-              </>
-            )}
+
+                    <View style={styles.modalSectionCard}>
+                      <View style={styles.modalSectionHeaderRow}>
+                        <Icon
+                          source="card-account-details-outline"
+                          size={20}
+                          color={palette.primary}
+                        />
+                        <Text style={styles.modalSectionTitle}>Detalles del cliente</Text>
+                      </View>
+
+                      <View style={styles.contactRow}>
+                        <View style={styles.contactIconWrap}>
+                          <Icon source="map-marker-outline" size={20} color={palette.primary} />
+                        </View>
+                        <View style={styles.contactInfo}>
+                          <Text style={styles.contactFieldLabel}>Dirección</Text>
+                          <Text
+                            style={
+                              clienteSeleccionado.direccion
+                                ? styles.contactFieldValue
+                                : styles.contactFieldEmpty
+                            }
+                          >
+                            {clienteSeleccionado.direccion || "Sin dirección cargada"}
+                          </Text>
+                        </View>
+                        {clienteSeleccionado.direccion ? (
+                          <IconButton
+                            icon="content-copy"
+                            size={20}
+                            iconColor={palette.primary}
+                            onPress={() =>
+                              void copiarTexto(clienteSeleccionado.direccion ?? "", "Dirección")
+                            }
+                            accessibilityLabel="Copiar dirección"
+                          />
+                        ) : null}
+                      </View>
+
+                      <View style={styles.contactRow}>
+                        <View style={styles.contactIconWrap}>
+                          <Icon source="phone-outline" size={20} color={palette.primary} />
+                        </View>
+                        <View style={styles.contactInfo}>
+                          <Text style={styles.contactFieldLabel}>Teléfono</Text>
+                          <Text
+                            style={
+                              clienteSeleccionado.telefono
+                                ? styles.contactFieldValue
+                                : styles.contactFieldEmpty
+                            }
+                          >
+                            {clienteSeleccionado.telefono || "Sin teléfono cargado"}
+                          </Text>
+                        </View>
+                        {clienteSeleccionado.telefono ? (
+                          <IconButton
+                            icon="content-copy"
+                            size={20}
+                            iconColor={palette.primary}
+                            onPress={() =>
+                              void copiarTexto(clienteSeleccionado.telefono ?? "", "Teléfono")
+                            }
+                            accessibilityLabel="Copiar teléfono"
+                          />
+                        ) : null}
+                      </View>
+
+                      <View style={styles.contactButtonsRow}>
+                        <Button
+                          mode="contained"
+                          icon="phone"
+                          buttonColor={palette.primary}
+                          textColor="#ffffff"
+                          onPress={() => void llamarTelefono(clienteSeleccionado.telefono ?? "")}
+                          disabled={!clienteSeleccionado.telefono}
+                          style={styles.actionBtn}
+                          contentStyle={{ minHeight: 42 }}
+                        >
+                          Llamar
+                        </Button>
+                        <Button
+                          mode={contactoAgendado ? "contained-tonal" : "outlined"}
+                          icon={contactoAgendado ? "check-circle" : "account-plus"}
+                          textColor={contactoAgendado ? palette.secondary : palette.primary}
+                          loading={agendandoContacto}
+                          onPress={() => void agendarContacto()}
+                          disabled={
+                            agendandoContacto ||
+                            (!clienteSeleccionado.telefono && !clienteSeleccionado.direccion)
+                          }
+                          style={styles.actionBtn}
+                          contentStyle={{ minHeight: 42 }}
+                        >
+                          {agendandoContacto
+                            ? "Guardando..."
+                            : contactoAgendado
+                            ? "Agendado"
+                            : "Agendar"}
+                        </Button>
+                      </View>
+                    </View>
+                  </>
+                );
+              })()}
           </ScrollView>
         </Modal>
-
-
 
         <Modal
           visible={activeModal === "pagos"}
@@ -1024,22 +1445,44 @@ export default function CobrosScreen() {
           contentContainerStyle={styles.modalContainer}
         >
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Pagos</Text>
-            <Button mode="text" onPress={() => setActiveModal(null)}>
-              Cerrar
-            </Button>
+            <View style={styles.modalHeaderTitleBox}>
+              <Text style={styles.modalTitle}>Pagos</Text>
+              {clienteSeleccionado && (
+                <Text style={styles.modalSubtitle} numberOfLines={1}>
+                  {clienteSeleccionado.nombre}
+                </Text>
+              )}
+            </View>
+            <IconButton
+              icon="close"
+              size={22}
+              onPress={() => {
+                setActiveModal(null);
+                cancelarEdicionPago();
+              }}
+              accessibilityLabel="Cerrar modal"
+            />
           </View>
-          <ScrollView contentContainerStyle={styles.modalContent}>
+          <Divider />
+          <ScrollView
+            contentContainerStyle={styles.modalContent}
+            keyboardShouldPersistTaps="handled"
+          >
             {clienteSeleccionado && (
               <>
                 <View style={styles.modalSection}>
                   <Text style={styles.modalSectionTitle}>Registrar pago</Text>
                   <Text>
-                    Fecha de pago: {fechaPago ? formatDateLong(fechaPago) : "Sin seleccionar"}
+                    Fecha seleccionada:{" "}
+                    <Text style={{ fontWeight: "700", color: theme.colors.primary }}>
+                      {formatDateLong(effectiveFechaNueva)}
+                    </Text>
+                    {!fechaPago ? " (hoy)" : ""}
                   </Text>
                   <View style={styles.row}>
                     <Button
                       mode="outlined"
+                      icon="calendar"
                       onPress={() => {
                         setDatePickerTarget("nuevo-pago");
                         setOpenDatePago(true);
@@ -1056,9 +1499,18 @@ export default function CobrosScreen() {
                       Usar hoy
                     </Button>
                   </View>
+                  <TextInput
+                    label="Nota opcional (ej. Efectivo, Transferencia)"
+                    value={detallePago}
+                    onChangeText={setDetallePago}
+                    mode="outlined"
+                    maxLength={60}
+                    style={styles.input}
+                  />
                   <Button
                     mode="contained"
-                    onPress={registrarPago}
+                    icon="check"
+                    onPress={() => void registrarPago()}
                     buttonColor={theme.colors.secondary}
                     contentStyle={{ minHeight: 44 }}
                   >
@@ -1066,54 +1518,69 @@ export default function CobrosScreen() {
                   </Button>
                 </View>
 
+                <Divider />
+
                 <View style={styles.modalSection}>
                   <Text style={styles.modalSectionTitle}>Historial de pagos</Text>
                   {pagoEnEdicion && (
-                    <>
-                      <Text>
+                    <View
+                      style={{
+                        padding: 12,
+                        borderRadius: 12,
+                        backgroundColor: theme.colors.surfaceVariant,
+                        borderWidth: 1,
+                        borderColor: theme.colors.outline,
+                        gap: 8,
+                      }}
+                    >
+                      <Text style={{ fontWeight: "700" }}>
                         Editando pago:{" "}
                         {fechaPagoEdicion ? formatDateLong(fechaPagoEdicion) : "Sin seleccionar"}
                       </Text>
+                      <Button
+                        mode="outlined"
+                        icon="calendar"
+                        onPress={() => {
+                          setDatePickerTarget("editar-pago");
+                          setOpenDatePago(true);
+                        }}
+                      >
+                        Cambiar fecha
+                      </Button>
+                      <TextInput
+                        label="Nota del pago"
+                        value={detallePagoEdicion}
+                        onChangeText={setDetallePagoEdicion}
+                        mode="outlined"
+                        maxLength={60}
+                        style={styles.input}
+                      />
                       <View style={styles.row}>
                         <Button
-                          mode="outlined"
-                          onPress={() => {
-                            setDatePickerTarget("editar-pago");
-                            setOpenDatePago(true);
-                          }}
-                          contentStyle={{ minHeight: 44 }}
-                        >
-                          Cambiar fecha
-                        </Button>
-                        <Button
                           mode="contained"
-                          onPress={guardarEdicionPago}
+                          onPress={() => void guardarEdicionPago()}
                           buttonColor={theme.colors.secondary}
-                          contentStyle={{ minHeight: 44 }}
                         >
                           Guardar cambio
                         </Button>
-                        <Button
-                          mode="text"
-                          onPress={cancelarEdicionPago}
-                          contentStyle={{ minHeight: 44 }}
-                        >
+                        <Button mode="text" onPress={cancelarEdicionPago}>
                           Cancelar
                         </Button>
                       </View>
-                    </>
+                    </View>
                   )}
+
                   {pagosDelCliente.length === 0 ? (
                     <Text>No hay pagos registrados.</Text>
                   ) : (
                     <>
                       {pagosDelCliente
-                        .slice(0, mostrarTodosPagos ? pagosDelCliente.length : 3)
+                        .slice(0, mostrarTodosPagos ? pagosDelCliente.length : 5)
                         .map((ev) => (
                           <List.Item
                             key={ev.id}
-                            title="Pago registrado"
-                            description={`${formatDateLong(ev.fecha)}${ev.detalle ? ` - ${ev.detalle}` : ""}`}
+                            title={ev.detalle || "Pago registrado"}
+                            description={formatDateLong(ev.fecha)}
                             right={() => (
                               <View style={styles.historyActions}>
                                 <Button
@@ -1135,12 +1602,12 @@ export default function CobrosScreen() {
                             )}
                           />
                         ))}
-                      {pagosDelCliente.length > 3 && (
+                      {pagosDelCliente.length > 5 && (
                         <Button
                           mode="text"
                           onPress={() => setMostrarTodosPagos((prev) => !prev)}
                         >
-                          {mostrarTodosPagos ? "Ver menos" : "Ver más"}
+                          {mostrarTodosPagos ? "Ver menos" : `Ver todos (${pagosDelCliente.length})`}
                         </Button>
                       )}
                     </>
@@ -1152,37 +1619,45 @@ export default function CobrosScreen() {
         </Modal>
 
         <Dialog
-          visible={confirmPagoVisible}
-          onDismiss={() => {
-            setConfirmPagoVisible(false);
-            setConfirmPagoFecha(null);
-          }}
+          visible={confirmPago.visible}
+          onDismiss={() => setConfirmPago({ visible: false, fecha: "", reason: "anterior" })}
           style={miViandaDialogStyle}
         >
-          <Dialog.Title>Pago con fecha anterior</Dialog.Title>
+          <Dialog.Title>
+            {confirmPago.reason === "duplicado"
+              ? "Pago en la misma fecha"
+              : "Pago con fecha anterior"}
+          </Dialog.Title>
           <Dialog.Content>
-            <Text>¿Deseás registrar este pago con fecha anterior?</Text>
+            <Text>
+              {confirmPago.reason === "duplicado"
+                ? `Ya existe un pago registrado el ${formatDateLong(
+                    confirmPago.fecha
+                  )}. ¿Querés sumar otro ciclo adicional con esa fecha?`
+                : `La fecha elegida (${formatDateLong(
+                    confirmPago.fecha
+                  )}) es anterior al último pago registrado. ¿Deseás agregar este pago histórico?`}
+            </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button
-              onPress={() => {
-                setConfirmPagoVisible(false);
-                if (confirmPagoFecha) procesarPago(confirmPagoFecha, false);
-              }}
+              onPress={() => setConfirmPago({ visible: false, fecha: "", reason: "anterior" })}
             >
-              No
+              Cancelar
             </Button>
             <Button
+              mode="contained"
               onPress={() => {
-                setConfirmPagoVisible(false);
-                if (confirmPagoFecha) procesarPago(confirmPagoFecha, true);
+                const fecha = confirmPago.fecha;
+                const isHist = confirmPago.reason === "anterior";
+                setConfirmPago({ visible: false, fecha: "", reason: "anterior" });
+                if (fecha) void procesarPago(fecha, isHist);
               }}
             >
-              Sí, marcar
+              Confirmar
             </Button>
           </Dialog.Actions>
         </Dialog>
-
 
         <Dialog
           visible={confirmDeleteEventVisible}
@@ -1195,11 +1670,19 @@ export default function CobrosScreen() {
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={cancelarBorradoEvento}>Cancelar</Button>
-            <Button textColor={theme.colors.error} onPress={borrarEventoSeleccionado}>
+            <Button textColor={theme.colors.error} onPress={() => void borrarEventoSeleccionado()}>
               Borrar
             </Button>
           </Dialog.Actions>
         </Dialog>
+
+        <Snackbar
+          visible={snackbar.visible}
+          onDismiss={() => setSnackbar({ visible: false, message: "" })}
+          duration={2500}
+        >
+          {snackbar.message}
+        </Snackbar>
       </Portal>
     </View>
   );

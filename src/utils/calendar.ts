@@ -1,5 +1,5 @@
 import { Holiday } from "../types/types";
-import { formatLocalDate } from "./date";
+import { formatLocalDate, isValidIsoDateString } from "./date";
 
 const toDateString = (date: Date) => formatLocalDate(date);
 
@@ -21,31 +21,74 @@ export const isBusinessDay = (date: Date, feriadosSet: Set<string>) => {
   return !isWeekend(date) && !feriadosSet.has(currentStr);
 };
 
+/** Devuelve la misma fecha si es día hábil; si cae en fin de semana o feriado, avanza al siguiente hábil. */
+export const normalizeBusinessDay = (dateStr: string, feriados: Holiday[]) => {
+  if (!isValidIsoDateString(dateStr)) return dateStr;
+  const feriadosSet = new Set(feriados.map((f) => f.fecha));
+  const date = parseLocalDate(dateStr);
+  if (isBusinessDay(date, feriadosSet)) return dateStr;
+  return getNextBusinessDay(dateStr, feriados);
+};
+
 export const buildMealCalendar = (
   startDate: string,
   count: number,
   feriados: Holiday[]
 ) => {
+  if (!isValidIsoDateString(startDate) || !Number.isFinite(count) || count <= 0) {
+    return [];
+  }
+
+  const targetCount = Math.floor(count);
   const feriadosSet = new Set(feriados.map((f) => f.fecha));
   const result: string[] = [];
 
   let cursor = parseLocalDate(startDate);
 
-  // Si el día de inicio es hábil, lo contamos como primera entrega del ciclo
-  // (pago + entrega el mismo día → el ciclo termina un día antes)
+  // Si el día de inicio es hábil, lo contamos como primera entrega del ciclo.
   const startStr = toDateString(cursor);
-  if (!isWeekend(cursor) && !feriadosSet.has(startStr)) {
+  if (isBusinessDay(cursor, feriadosSet)) {
     result.push(startStr);
   }
 
-  while (result.length < count) {
+  while (result.length < targetCount) {
     cursor = addDays(cursor, 1);
     const currentStr = toDateString(cursor);
-    if (!isWeekend(cursor) && !feriadosSet.has(currentStr)) {
+    if (isBusinessDay(cursor, feriadosSet)) {
       result.push(currentStr);
     }
   }
 
+  return result;
+};
+
+/** Lista los días hábiles estrictamente posteriores a startDate y menores o iguales a endDate. */
+export const listBusinessDaysBetween = (
+  startDate: string,
+  endDate: string,
+  feriados: Holiday[]
+): string[] => {
+  if (
+    !isValidIsoDateString(startDate) ||
+    !isValidIsoDateString(endDate) ||
+    endDate <= startDate
+  ) {
+    return [];
+  }
+
+  const feriadosSet = new Set(feriados.map((f) => f.fecha));
+  const cursor = parseLocalDate(startDate);
+  const end = parseLocalDate(endDate);
+  const result: string[] = [];
+
+  cursor.setDate(cursor.getDate() + 1);
+
+  while (cursor <= end) {
+    if (isBusinessDay(cursor, feriadosSet)) {
+      result.push(toDateString(cursor));
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
 
   return result;
 };
@@ -54,32 +97,14 @@ export const countBusinessDaysBetween = (
   startDate: string,
   endDate: string,
   feriados: Holiday[]
-) => {
-  if (endDate <= startDate) return 0;
-
-  const feriadosSet = new Set(feriados.map((f) => f.fecha));
-  const cursor = parseLocalDate(startDate);
-  const end = parseLocalDate(endDate);
-  let count = 0;
-
-  cursor.setDate(cursor.getDate() + 1);
-
-  while (cursor <= end) {
-    if (isBusinessDay(cursor, feriadosSet)) {
-      count += 1;
-    }
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return count;
-};
+) => listBusinessDaysBetween(startDate, endDate, feriados).length;
 
 export const subtractBusinessDays = (
   dateStr: string,
   businessDays: number,
   feriados: Holiday[]
 ) => {
-  if (businessDays <= 0) return dateStr;
+  if (!isValidIsoDateString(dateStr) || businessDays <= 0) return dateStr;
 
   const feriadosSet = new Set(feriados.map((f) => f.fecha));
   const cursor = parseLocalDate(dateStr);
@@ -101,6 +126,7 @@ export const isBeforeToday = (dateStr: string) => {
 };
 
 export const getNextBusinessDay = (dateStr: string, feriados: Holiday[]) => {
+  if (!isValidIsoDateString(dateStr)) return dateStr;
   const feriadosSet = new Set(feriados.map((f) => f.fecha));
   const cursor = parseLocalDate(dateStr);
   do {
@@ -110,6 +136,7 @@ export const getNextBusinessDay = (dateStr: string, feriados: Holiday[]) => {
 };
 
 export const getWeekdayName = (dateStr: string) => {
+  if (!isValidIsoDateString(dateStr)) return "";
   const date = parseLocalDate(dateStr);
   const day = date.getDay();
   switch (day) {
@@ -133,6 +160,7 @@ export const getWeekdayName = (dateStr: string) => {
 };
 
 export const getWeekStart = (dateStr: string) => {
+  if (!isValidIsoDateString(dateStr)) return dateStr;
   const date = parseLocalDate(dateStr);
   const day = date.getDay();
   const diff = day === 0 ? -6 : 1 - day;
@@ -165,7 +193,6 @@ export const buildMonthGrid = (year: number, monthIndex: number) => {
 
   const days: CalendarDay[] = [];
 
-  // Days from previous month to fill the first week
   for (let i = 0; i < startDay; i += 1) {
     const date = new Date(year, monthIndex, -(startDay - 1 - i));
     days.push({
@@ -175,7 +202,6 @@ export const buildMonthGrid = (year: number, monthIndex: number) => {
     });
   }
 
-  // Days of current month
   for (let d = 1; d <= totalDays; d += 1) {
     const date = new Date(year, monthIndex, d);
     days.push({
@@ -185,7 +211,6 @@ export const buildMonthGrid = (year: number, monthIndex: number) => {
     });
   }
 
-  // Fill remaining cells to complete weeks
   while (days.length % 7 !== 0) {
     const nextIndex = days.length - (startDay + totalDays);
     const date = new Date(year, monthIndex + 1, nextIndex + 1);

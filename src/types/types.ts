@@ -51,13 +51,13 @@ export type Period = {
 export type PaymentCycle = {
   id: string;
   clienteId: string;
-  pagoId: string;                           // Referencia al evento de pago que inicia el ciclo
-  fechaDesde: string;                       // YYYY-MM-DD
-  fechaHasta: string;                       // YYYY-MM-DD (último día hábil)
-  diasHabiles: string[];                    // Array de todos los días hábiles en orden
-  diasConsumidos: number;                   // Días ya utilizados del ciclo
-  estado: 'completado' | 'activo' | 'futuro'; // Estado relativo a hoy
-  creadoEn: string;                         // Timestamp ISO
+  pagoId: string; // Referencia al evento de pago que inicia el ciclo
+  fechaDesde: string; // YYYY-MM-DD
+  fechaHasta: string; // YYYY-MM-DD (último día hábil)
+  diasHabiles: string[]; // Array de todos los días hábiles en orden
+  diasConsumidos: number; // Días ya utilizados del ciclo
+  estado: "completado" | "activo" | "futuro"; // Estado relativo a hoy
+  creadoEn: string; // Timestamp ISO
 };
 
 export type Holiday = {
@@ -97,15 +97,20 @@ export type MiViandaStackParamList = {
 };
 
 export type MisGastosStackParamList = {
-  Home: undefined;
   Resumen: undefined;
   Categorias: undefined;
-  Gastos: undefined;
+  Gastos:
+    | {
+        categoriaId?: string | null;
+        filterMode?: "dia" | "semana" | "mes" | "anio" | "historico";
+        referenceDateIso?: string;
+      }
+    | undefined;
   Respaldo: undefined;
 };
 
 export type RootStackParamList = {
   Bienvenida: undefined;
   MiVianda: NavigatorScreenParams<MiViandaStackParamList> | undefined;
-  MisGastos: NavigatorScreenParams<MisGastosStackParamList>;
+  MisGastos: NavigatorScreenParams<MisGastosStackParamList> | undefined;
 };

@@ -1,43 +1,98 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { Alert } from "react-native";
 import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
 import {
   Button,
   Dialog,
+  HelperText,
   Portal,
   Snackbar,
+  Surface,
   Text,
   TextInput,
   useTheme,
 } from "react-native-paper";
-import { DatePickerModal, registerTranslation, es } from "react-native-paper-dates";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { DatePickerModal } from "react-native-paper-dates";
 import { useFocusEffect } from "@react-navigation/native";
-import { Client, Holiday } from "../../types/types";
-import { miViandaDialogStyle } from "./miViandaShared";
-import { STORAGE_KEYS } from "../../utils/storage";
-import { formatDateLong, formatLocalDate, getTodayString } from "../../utils/date";
-import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
-import { buildMealCalendar } from "../../utils/calendar";
-import { getClientCycleDays, getClientCycleStart } from "../../utils/billing";
 
-registerTranslation("es", es);
+import { useStore } from "../../store/zustand";
+import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
+import type { Holiday } from "../../types/types";
+import { formatDateLong, formatLocalDate, getTodayString } from "../../utils/date";
+import { miViandaDialogStyle } from "./miViandaShared";
 
 export default function FeriadosScreen() {
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const spacing = getSpacing(width);
   const titleSize = getFontSize(width, 22);
-  const bodySize = getFontSize(width, 16);
+  const bodySize = getFontSize(width, 15);
+
+  const setUbi = useStore((state) => state.setUbi);
+  const feriados = useStore((state) => state.miViandaFeriados);
+  const addMiViandaHoliday = useStore((state) => state.addMiViandaHoliday);
+  const deleteMiViandaHoliday = useStore((state) => state.deleteMiViandaHoliday);
 
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
-  const [feriados, setFeriados] = useState<Holiday[]>([]);
   const [fechaFeriado, setFechaFeriado] = useState("");
   const [openDateFeriado, setOpenDateFeriado] = useState(false);
   const [motivoFeriado, setMotivoFeriado] = useState("");
+  const [attemptedAdd, setAttemptedAdd] = useState(false);
   const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
   const [feriadoABorrar, setFeriadoABorrar] = useState<Holiday | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      setUbi("Configuracion");
+    }, [setUbi])
+  );
+
+  const mostrarMensaje = (msg: string) => {
+    setSnackbarMsg(msg);
+    setSnackbarVisible(true);
+  };
+
+  const esFinDeSemana = (fecha: string) => {
+    const dia = new Date(`${fecha}T00:00:00`).getDay();
+    return dia === 0 || dia === 6;
+  };
+
+  const esFeriado = (fecha: string) => feriados.some((f) => f.fecha === fecha);
+
+  const dateValidationError = useMemo(() => {
+    const fecha = fechaFeriado.trim();
+    if (!fecha) return "Elegí una fecha para el feriado.";
+    if (esFinDeSemana(fecha)) return "Sábado y domingo ya son días no hábiles.";
+    if (esFeriado(fecha)) return "Ese feriado ya está cargado.";
+    return null;
+  }, [fechaFeriado, feriados]);
+
+  const agregarFeriado = async () => {
+    setAttemptedAdd(true);
+    if (dateValidationError) {
+      mostrarMensaje(dateValidationError);
+      return;
+    }
+
+    await addMiViandaHoliday(fechaFeriado.trim(), motivoFeriado.trim());
+    setFechaFeriado("");
+    setMotivoFeriado("");
+    setAttemptedAdd(false);
+    mostrarMensaje("Feriado agregado y ciclos recalculados.");
+  };
+
+  const solicitarBorrarFeriado = (feriado: Holiday) => {
+    setFeriadoABorrar(feriado);
+    setConfirmDeleteVisible(true);
+  };
+
+  const borrarFeriado = async () => {
+    if (!feriadoABorrar) return;
+    await deleteMiViandaHoliday(feriadoABorrar.id);
+    setConfirmDeleteVisible(false);
+    setFeriadoABorrar(null);
+    mostrarMensaje("Feriado eliminado y ciclos recalculados.");
+  };
 
   const styles = useMemo(
     () =>
@@ -57,7 +112,7 @@ export default function FeriadosScreen() {
         },
         title: {
           fontSize: titleSize,
-          fontWeight: "700",
+          fontWeight: "800",
           color: theme.colors.onSurface,
         },
         subtitle: {
@@ -69,7 +124,7 @@ export default function FeriadosScreen() {
         card: {
           marginTop: spacing,
           padding: spacing,
-          borderRadius: 14,
+          borderRadius: 16,
           backgroundColor: theme.colors.surface,
           borderWidth: 1,
           borderColor: theme.colors.outline,
@@ -88,13 +143,15 @@ export default function FeriadosScreen() {
           alignItems: width < 380 ? "flex-start" : "center",
           justifyContent: "space-between",
           gap: 8,
-          paddingVertical: 6,
+          paddingVertical: 8,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.colors.outlineVariant,
         },
         emptyText: {
           color: theme.colors.onSurfaceVariant,
         },
         tag: {
-          fontWeight: "600",
+          fontWeight: "700",
           color: theme.colors.primary,
         },
       }),
@@ -105,6 +162,7 @@ export default function FeriadosScreen() {
       theme.colors.onSurface,
       theme.colors.onSurfaceVariant,
       theme.colors.outline,
+      theme.colors.outlineVariant,
       theme.colors.primary,
       theme.colors.surface,
       titleSize,
@@ -112,136 +170,17 @@ export default function FeriadosScreen() {
     ]
   );
 
-  const mostrarMensaje = (msg: string) => {
-    setSnackbarMsg(msg);
-    setSnackbarVisible(true);
-  };
-
-  const loadFeriados = useCallback(async () => {
-    const data = await AsyncStorage.getItem(STORAGE_KEYS.FERIADOS);
-    setFeriados(data ? (JSON.parse(data) as Holiday[]) : []);
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadFeriados();
-    }, [loadFeriados])
-  );
-
-  const esFinDeSemana = (fecha: string) => {
-    const dia = new Date(`${fecha}T00:00:00`).getDay();
-    return dia === 0 || dia === 6;
-  };
-
-  const esFeriado = (fecha: string) => feriados.some((f) => f.fecha === fecha);
-
-  const agregarFeriado = async () => {
-    const fecha = fechaFeriado.trim();
-    const motivo = motivoFeriado.trim();
-
-    if (!fecha) {
-      mostrarMensaje("Elegí una fecha para el feriado.");
-      return;
-    }
-
-    if (esFinDeSemana(fecha)) {
-      mostrarMensaje("Sábado y domingo ya no cuentan como vianda.");
-      return;
-    }
-
-    if (esFeriado(fecha)) {
-      mostrarMensaje("Ese feriado ya está cargado.");
-      return;
-    }
-
-    const nuevo: Holiday = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      fecha,
-      motivo: motivo.length ? motivo : undefined,
-    };
-
-    const updated = [...feriados, nuevo].sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    await AsyncStorage.setItem(STORAGE_KEYS.FERIADOS, JSON.stringify(updated));
-    setFeriados(updated);
-    setFechaFeriado("");
-    setMotivoFeriado("");
-
-    Alert.alert(
-      "Compensar feriado",
-      "Este feriado quita 1 día del ciclo. ¿Querés agregar ese día al final del ciclo de cada cliente vigente?",
-      [
-        { text: "No", style: "cancel" },
-        {
-          text: "Sí",
-          onPress: async () => {
-            try {
-              const clientesRaw = await AsyncStorage.getItem(STORAGE_KEYS.CLIENTES);
-              if (!clientesRaw) {
-                mostrarMensaje("Feriado agregado.");
-                return;
-              }
-
-              const clientes = JSON.parse(clientesRaw) as Client[];
-
-              const updatedClientes = clientes.map((c) => {
-                const cicloDesde = getClientCycleStart(c);
-                if (!cicloDesde) return c;
-
-                const totalCiclo = getClientCycleDays(c);
-                const calendario = buildMealCalendar(cicloDesde, totalCiclo, updated);
-                const vigente = calendario.includes(fecha);
-                if (!vigente) return c;
-
-                return {
-                  ...c,
-                  comidasReponer: (c.comidasReponer ?? 0) + 1,
-                };
-              });
-
-              await AsyncStorage.setItem(
-                STORAGE_KEYS.CLIENTES,
-                JSON.stringify(updatedClientes)
-              );
-
-              mostrarMensaje(
-                "Feriado agregado y día compensado en clientes vigentes."
-              );
-            } catch (e) {
-              console.error(e);
-              mostrarMensaje("Feriado agregado, pero no se pudo compensar el ciclo.");
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const solicitarBorrarFeriado = (feriado: Holiday) => {
-    setFeriadoABorrar(feriado);
-    setConfirmDeleteVisible(true);
-  };
-
-  const borrarFeriado = async () => {
-    if (!feriadoABorrar) return;
-    const updated = feriados.filter((f) => f.id !== feriadoABorrar.id);
-    await AsyncStorage.setItem(STORAGE_KEYS.FERIADOS, JSON.stringify(updated));
-    setFeriados(updated);
-    setConfirmDeleteVisible(false);
-    setFeriadoABorrar(null);
-    mostrarMensaje("Feriado eliminado.");
-  };
-
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.content}>
           <Text style={styles.title}>Feriados</Text>
           <Text style={styles.subtitle}>
-            Los feriados no cuentan como días hábiles. Agregalos para que el calendario sea correcto.
+            Los feriados no cuentan como días hábiles. Al agregar o quitar un feriado, todos los
+            ciclos de pago se recalculan automáticamente para correr o ajustar las entregas.
           </Text>
 
-          <View style={styles.card}>
+          <Surface style={styles.card} elevation={0}>
             <Text>
               Fecha seleccionada:{" "}
               <Text style={styles.tag}>
@@ -250,7 +189,11 @@ export default function FeriadosScreen() {
             </Text>
 
             <View style={styles.actionRow}>
-              <Button mode="outlined" onPress={() => setOpenDateFeriado(true)}>
+              <Button
+                mode="outlined"
+                icon="calendar"
+                onPress={() => setOpenDateFeriado(true)}
+              >
                 Elegir fecha
               </Button>
               <Button
@@ -261,16 +204,26 @@ export default function FeriadosScreen() {
               </Button>
             </View>
 
+            {(attemptedAdd || fechaFeriado.length > 0) && dateValidationError ? (
+              <HelperText type="error" visible>
+                {dateValidationError}
+              </HelperText>
+            ) : null}
+
             <TextInput
               label="Motivo (opcional)"
               value={motivoFeriado}
               onChangeText={setMotivoFeriado}
+              mode="outlined"
+              autoCapitalize="sentences"
+              maxLength={60}
               style={styles.input}
             />
 
             <Button
               mode="contained"
-              onPress={agregarFeriado}
+              icon="plus"
+              onPress={() => void agregarFeriado()}
               buttonColor={theme.colors.primary}
               contentStyle={{ minHeight: 48 }}
             >
@@ -282,21 +235,22 @@ export default function FeriadosScreen() {
             ) : (
               feriados.map((f) => (
                 <View key={f.id} style={styles.row}>
-                  <Text>
+                  <Text style={{ flex: 1 }}>
                     {formatDateLong(f.fecha)}
-                    {f.motivo ? ` - ${f.motivo}` : ""}
+                    {f.motivo ? ` — ${f.motivo}` : ""}
                   </Text>
                   <Button
                     mode="text"
                     textColor={theme.colors.error}
                     onPress={() => solicitarBorrarFeriado(f)}
+                    compact
                   >
                     Quitar
                   </Button>
                 </View>
               ))
             )}
-          </View>
+          </Surface>
         </View>
       </ScrollView>
 
@@ -310,12 +264,13 @@ export default function FeriadosScreen() {
           <Dialog.Content>
             <Text>
               ¿Estás seguro que querés eliminar el feriado{" "}
-              {feriadoABorrar ? formatDateLong(feriadoABorrar.fecha) : ""}?
+              {feriadoABorrar ? formatDateLong(feriadoABorrar.fecha) : ""}? Los ciclos vigentes se
+              recalcularán automáticamente.
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmDeleteVisible(false)}>Cancelar</Button>
-            <Button onPress={borrarFeriado} textColor={theme.colors.error}>
+            <Button onPress={() => void borrarFeriado()} textColor={theme.colors.error}>
               Eliminar
             </Button>
           </Dialog.Actions>
@@ -326,6 +281,7 @@ export default function FeriadosScreen() {
         locale="es"
         mode="single"
         visible={openDateFeriado}
+        date={fechaFeriado ? new Date(`${fechaFeriado}T00:00:00`) : new Date()}
         onDismiss={() => setOpenDateFeriado(false)}
         onConfirm={({ date }) => {
           setOpenDateFeriado(false);

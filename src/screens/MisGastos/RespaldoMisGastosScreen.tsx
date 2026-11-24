@@ -1,22 +1,30 @@
-﻿import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
-import { Button, Dialog, Divider, Portal, Snackbar, Surface, Text, useTheme } from "react-native-paper";
+import { Button, Dialog, Portal, Snackbar, Surface, Text, useTheme } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
-import * as FileSystemLegacy from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
+import {
+  AlertTriangle,
+  Coins,
+  Database,
+  Download,
+  FolderSync,
+  Receipt,
+  ShieldCheck,
+  Tag,
+  Trash2,
+  Upload,
+} from "lucide-react-native";
 
 import { useStore } from "../../store/zustand";
-import { CONTENT_MAX_WIDTH, getFontSize, getLineHeight, getSpacing } from "../../theme/layout";
+import { palette } from "../../theme/appTheme";
+import { CONTENT_MAX_WIDTH, getFontSize, getSpacing } from "../../theme/layout";
 import type { ExpenseCategory, ExpenseRecord } from "../../types/types";
-import { misGastosDialogStyle } from "./misGastosShared";
-import { resolveSharedFileUri } from "../../utils/sharedBackupFile";
-
-type BackupData = {
-  categorias: ExpenseCategory[];
-  gastos: ExpenseRecord[];
-};
+import { formatCurrency, misGastosDialogStyle } from "./misGastosShared";
+import { readSharedFileText } from "../../utils/sharedBackupFile";
+import { parseMisGastosBackup, type MisGastosBackupData } from "../../utils/backup";
 
 export type Props = {
   onImported?: (categorias: ExpenseCategory[], gastos: ExpenseRecord[]) => void;
@@ -31,120 +39,24 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const spacing = getSpacing(width);
-  const titleSize = getFontSize(width, 22);
-  const bodySize = getFontSize(width, 16);
+  const titleSize = getFontSize(width, 24);
+  const bodySize = getFontSize(width, 15);
 
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
   const [confirmImportVisible, setConfirmImportVisible] = useState(false);
   const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
-
-  const stats = useMemo(
-    () => [
-      { label: "Categorías", value: String(categories.length) },
-      { label: "Gastos", value: String(expenses.length) },
-    ],
-    [categories.length, expenses.length]
-  );
-
-  const styles = useMemo(
-    () =>
-      StyleSheet.create({
-        container: {
-          flex: 1,
-          backgroundColor: theme.colors.background,
-        },
-        scroll: {
-          padding: spacing,
-          paddingBottom: 160,
-        },
-        content: {
-          width: "100%",
-          maxWidth: CONTENT_MAX_WIDTH,
-          alignSelf: "center",
-        },
-        hero: {
-          padding: spacing,
-          borderRadius: 24,
-          backgroundColor: theme.colors.surface,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
-          gap: 14,
-        },
-        sectionBlock: {
-          gap: 10,
-        },
-        title: {
-          fontSize: titleSize,
-          fontWeight: "700",
-          color: theme.colors.onSurface,
-        },
-        sectionTitle: {
-          fontSize: getFontSize(width, 18),
-          fontWeight: "700",
-          color: theme.colors.onSurface,
-        },
-        subtitle: {
-          fontSize: bodySize,
-          lineHeight: getLineHeight(bodySize),
-          color: theme.colors.onSurfaceVariant,
-        },
-        statsRow: {
-          flexDirection: "row",
-          flexWrap: "wrap",
-          gap: 10,
-        },
-        statPill: {
-          flexGrow: 1,
-          minWidth: 120,
-          paddingVertical: 12,
-          paddingHorizontal: 14,
-          borderRadius: 16,
-          backgroundColor: theme.colors.surfaceVariant,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
-          gap: 2,
-        },
-        statLabel: {
-          fontSize: getFontSize(width, 12),
-          color: theme.colors.onSurfaceVariant,
-          fontWeight: "600",
-          textTransform: "uppercase",
-          letterSpacing: 0.6,
-        },
-        statValue: {
-          fontSize: getFontSize(width, 18),
-          color: theme.colors.onSurface,
-          fontWeight: "800",
-        },
-        actionStack: {
-          gap: 10,
-        },
-        dangerButton: {
-          borderRadius: 12,
-          borderWidth: 1,
-          borderColor: theme.colors.error,
-        },
-      }),
-    [
-      bodySize,
-      spacing,
-      theme.colors.background,
-      theme.colors.error,
-      theme.colors.onSurface,
-      theme.colors.onSurfaceVariant,
-      theme.colors.outline,
-      theme.colors.surface,
-      theme.colors.surfaceVariant,
-      titleSize,
-      width,
-    ]
-  );
+  const [busy, setBusy] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       setMisGastosUbi("Respaldo");
     }, [setMisGastosUbi])
+  );
+
+  const totalSpent = useMemo(
+    () => expenses.reduce((acc, e) => acc + e.monto, 0),
+    [expenses]
   );
 
   const mostrarMensaje = (msg: string) => {
@@ -153,8 +65,10 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
   };
 
   const exportarRespaldo = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      const data: BackupData = {
+      const data: MisGastosBackupData = {
         categorias: categories,
         gastos: expenses,
       };
@@ -177,10 +91,14 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Error desconocido";
       mostrarMensaje(`Error al exportar: ${message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const importarRespaldo = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: "application/json",
@@ -198,17 +116,8 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
         return;
       }
 
-      const readableUri = await resolveSharedFileUri(fileUri);
-      const content = await FileSystemLegacy.readAsStringAsync(readableUri);
-
-      const data = JSON.parse(content) as Partial<BackupData>;
-      const categorias = Array.isArray(data.categorias) ? data.categorias : null;
-      const gastos = Array.isArray(data.gastos) ? data.gastos : null;
-
-      if (!categorias || !gastos) {
-        mostrarMensaje("Formato de archivo inválido.");
-        return;
-      }
+      const content = await readSharedFileText(fileUri);
+      const { categorias, gastos } = parseMisGastosBackup(content);
 
       await replaceMisGastosData(categorias, gastos);
       onImported?.(categorias, gastos);
@@ -216,10 +125,14 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Error desconocido";
       mostrarMensaje(`Error al importar: ${message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const borrarTodo = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await clearMisGastosData();
       onImported?.([], []);
@@ -227,69 +140,225 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Error desconocido";
       mostrarMensaje("Error al borrar datos: " + message);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { padding: spacing }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.content}>
-          <Surface style={styles.hero} elevation={0}>
-            <View style={styles.sectionBlock}>
-              <Text style={styles.title}>Respaldo</Text>
-              <Text style={styles.subtitle}>
-                Exporta un respaldo para guardar tus datos o importa uno existente. El borrado total
-                es irreversible.
+          <View style={styles.pageHeader}>
+            <View style={styles.pageHeaderTop}>
+              <View
+                style={[
+                  styles.titleIconBadge,
+                  { backgroundColor: `${theme.colors.primary}18` },
+                ]}
+              >
+                <Database color={theme.colors.primary} size={22} strokeWidth={2.2} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.title, { color: theme.colors.onSurface, fontSize: titleSize }]}>
+                  Copia de Seguridad
+                </Text>
+                <Text
+                  style={[
+                    styles.subtitle,
+                    { color: theme.colors.onSurfaceVariant, fontSize: bodySize },
+                  ]}
+                >
+                  Exportá, importá o reseteá la información de tus finanzas
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <Surface
+            style={[
+              styles.card,
+              {
+                backgroundColor: theme.colors.surface,
+                borderColor: theme.colors.outline,
+              },
+            ]}
+            elevation={0}
+          >
+            <View style={styles.cardHeader}>
+              <View
+                style={[
+                  styles.iconSmallBadge,
+                  { backgroundColor: `${theme.colors.primary}15` },
+                ]}
+              >
+                <ShieldCheck size={18} color={theme.colors.primary} strokeWidth={2.2} />
+              </View>
+              <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>
+                Estado de la base de datos
               </Text>
             </View>
 
-            <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>Resumen</Text>
-              <View style={styles.statsRow}>
-                {stats.map((stat) => (
-                  <View key={stat.label} style={styles.statPill}>
-                    <Text style={styles.statLabel}>{stat.label}</Text>
-                    <Text style={styles.statValue}>{stat.value}</Text>
-                  </View>
-                ))}
+            <View style={styles.statsGrid}>
+              <View
+                style={[
+                  styles.statCard,
+                  {
+                    backgroundColor: theme.colors.surfaceVariant,
+                    borderColor: theme.colors.outline,
+                  },
+                ]}
+              >
+                <Tag size={16} color={theme.colors.primary} strokeWidth={2.2} />
+                <Text style={[styles.statValue, { color: theme.colors.onSurface }]}>
+                  {categories.length}
+                </Text>
+                <Text style={[styles.statLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  Categorías
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.statCard,
+                  {
+                    backgroundColor: theme.colors.surfaceVariant,
+                    borderColor: theme.colors.outline,
+                  },
+                ]}
+              >
+                <Receipt size={16} color={theme.colors.secondary} strokeWidth={2.2} />
+                <Text style={[styles.statValue, { color: theme.colors.onSurface }]}>
+                  {expenses.length}
+                </Text>
+                <Text style={[styles.statLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  Gastos totales
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.statCardFull,
+                  {
+                    backgroundColor: theme.colors.surfaceVariant,
+                    borderColor: theme.colors.outline,
+                  },
+                ]}
+              >
+                <Coins size={16} color={palette.danger} strokeWidth={2.2} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.statLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Monto total histórico registrado
+                  </Text>
+                  <Text style={[styles.statValueBig, { color: theme.colors.onSurface }]}>
+                    {formatCurrency(totalSpent)}
+                  </Text>
+                </View>
               </View>
             </View>
+          </Surface>
 
-            <Divider />
-
-            <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>Acciones</Text>
-              <View style={styles.actionStack}>
-                <Button
-                  mode="contained"
-                  icon="export"
-                  onPress={exportarRespaldo}
-                  contentStyle={{ minHeight: 48 }}
-                >
-                  Exportar respaldo
-                </Button>
-
-                <Button
-                  mode="outlined"
-                  icon="import"
-                  onPress={() => setConfirmImportVisible(true)}
-                  contentStyle={{ minHeight: 48 }}
-                >
-                  Importar respaldo
-                </Button>
-
-                <Button
-                  mode="text"
-                  icon="delete"
-                  textColor={theme.colors.error}
-                  style={styles.dangerButton}
-                  onPress={() => setConfirmDeleteVisible(true)}
-                  contentStyle={{ minHeight: 48 }}
-                >
-                  Eliminar todos los datos
-                </Button>
+          <Surface
+            style={[
+              styles.card,
+              {
+                backgroundColor: theme.colors.surface,
+                borderColor: theme.colors.outline,
+              },
+            ]}
+            elevation={0}
+          >
+            <View style={styles.cardHeader}>
+              <View
+                style={[
+                  styles.iconSmallBadge,
+                  { backgroundColor: `${theme.colors.secondary}15` },
+                ]}
+              >
+                <FolderSync size={18} color={theme.colors.secondary} strokeWidth={2.2} />
               </View>
+              <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>
+                Sincronización de archivos
+              </Text>
             </View>
+
+            <Text style={[styles.cardDesc, { color: theme.colors.onSurfaceVariant }]}>
+              Generá un archivo JSON con todos tus movimientos para guardarlo en la nube o
+              transferirlo a otro dispositivo.
+            </Text>
+
+            <View style={styles.actionButtonsCol}>
+              <Button
+                mode="contained"
+                icon={({ size, color }) => <Download size={size} color={color} />}
+                onPress={exportarRespaldo}
+                disabled={busy}
+                loading={busy}
+                style={styles.actionButton}
+                contentStyle={{ minHeight: 48 }}
+                labelStyle={styles.actionButtonLabel}
+              >
+                Exportar copia de seguridad
+              </Button>
+
+              <Button
+                mode="outlined"
+                icon={({ size, color }) => <Upload size={size} color={color} />}
+                onPress={() => setConfirmImportVisible(true)}
+                disabled={busy}
+                style={[styles.actionButton, { borderColor: theme.colors.outline }]}
+                contentStyle={{ minHeight: 48 }}
+                labelStyle={styles.actionButtonLabel}
+              >
+                Restaurar desde archivo
+              </Button>
+            </View>
+          </Surface>
+
+          <Surface
+            style={[
+              styles.dangerCard,
+              {
+                backgroundColor: `${theme.colors.error}08`,
+                borderColor: `${theme.colors.error}40`,
+              },
+            ]}
+            elevation={0}
+          >
+            <View style={styles.cardHeader}>
+              <View
+                style={[
+                  styles.iconSmallBadge,
+                  { backgroundColor: `${theme.colors.error}18` },
+                ]}
+              >
+                <AlertTriangle size={18} color={theme.colors.error} strokeWidth={2.4} />
+              </View>
+              <Text style={[styles.cardTitle, { color: theme.colors.error }]}>
+                Zona de riesgo
+              </Text>
+            </View>
+
+            <Text style={[styles.cardDesc, { color: theme.colors.onSurfaceVariant }]}>
+              Esta opción eliminará permanentemente todas las categorías y todos los registros de
+              gastos almacenados en este dispositivo.
+            </Text>
+
+            <Button
+              mode="text"
+              icon={({ size, color }) => <Trash2 size={size} color={color} />}
+              textColor={theme.colors.error}
+              style={[styles.dangerButton, { borderColor: theme.colors.error }]}
+              onPress={() => setConfirmDeleteVisible(true)}
+              disabled={busy}
+              contentStyle={{ minHeight: 46 }}
+              labelStyle={styles.actionButtonLabel}
+            >
+              Borrar todos los datos de MisGastos
+            </Button>
           </Surface>
         </View>
       </ScrollView>
@@ -302,20 +371,21 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
         >
           <Dialog.Title>Importar respaldo</Dialog.Title>
           <Dialog.Content>
-            <Text>
-              ¿Estás seguro que querés importar este respaldo? Se sobrescribirán tus datos
-              actuales.
+            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, lineHeight: 22 }}>
+              ¿Estás seguro de que deseás importar este archivo? Los datos actuales de categorías y
+              gastos se sobrescribirán con el contenido del respaldo.
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmImportVisible(false)}>Cancelar</Button>
             <Button
+              mode="contained"
               onPress={async () => {
                 setConfirmImportVisible(false);
                 await importarRespaldo();
               }}
             >
-              Importar
+              Sobrescribir e importar
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -325,23 +395,25 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
           onDismiss={() => setConfirmDeleteVisible(false)}
           style={misGastosDialogStyle}
         >
-          <Dialog.Title>Eliminar datos</Dialog.Title>
+          <Dialog.Title style={{ color: theme.colors.error }}>Eliminar todos los datos</Dialog.Title>
           <Dialog.Content>
-            <Text>
-              ¿Estás seguro que querés eliminar todos los datos? Esta acción no se puede
-              deshacer.
+            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, lineHeight: 22 }}>
+              ¿Confirmás que querés borrar permanentemente todos los gastos y categorías? Esta
+              acción no se puede deshacer.
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmDeleteVisible(false)}>Cancelar</Button>
             <Button
+              mode="contained"
+              buttonColor={theme.colors.error}
+              textColor={theme.colors.onError}
               onPress={async () => {
                 setConfirmDeleteVisible(false);
                 await borrarTodo();
               }}
-              textColor={theme.colors.error}
             >
-              Eliminar
+              Borrar definitivamente
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -357,3 +429,129 @@ export default function RespaldoMisGastosScreen({ onImported }: Props = {}) {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  scroll: {
+    paddingBottom: 150,
+  },
+  content: {
+    width: "100%",
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    gap: 14,
+  },
+  pageHeader: {
+    gap: 4,
+    marginBottom: 4,
+  },
+  pageHeaderTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  titleIconBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  card: {
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    gap: 14,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  iconSmallBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+  },
+  cardDesc: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "500",
+  },
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  statCard: {
+    flex: 1,
+    minWidth: 130,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 4,
+  },
+  statCardFull: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  statValue: {
+    fontSize: 20,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+  },
+  statValueBig: {
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    marginTop: 2,
+  },
+  statLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  actionButtonsCol: {
+    gap: 10,
+  },
+  actionButton: {
+    borderRadius: 14,
+  },
+  actionButtonLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  dangerCard: {
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    gap: 12,
+  },
+  dangerButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+});

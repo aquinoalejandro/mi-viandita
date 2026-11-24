@@ -1,30 +1,37 @@
 /**
  * Gestión de ciclos de pago de 20 días hábiles
- * 
- * Responsabilidades:
- * - Crear ciclos cuando hay un pago
- * - Recuperar ciclos persistidos
- * - Agrupar ciclos por estado (pasado, activo, futuro)
- * - Acumular días disponibles de múltiples ciclos
  */
 
-import { Holiday, PaymentCycle, ClientEvent } from "../types/types";
-import { buildMealCalendar, isBeforeToday } from "./calendar";
-import { getTodayString, formatLocalDate } from "./date";
+import { ClientEvent, Holiday, PaymentCycle, Period } from "../types/types";
+import {
+  buildMealCalendar,
+  getNextBusinessDay,
+  listBusinessDaysBetween,
+  normalizeBusinessDay,
+} from "./calendar";
+import { getTodayString, isValidIsoDateString } from "./date";
 
 const COMIDAS_POR_CICLO = 20;
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+export type CalendarDayState = {
+  fecha: string;
+  estado: "vencido" | "disponible" | "consumido" | "futuro";
+  cicloId: string;
+  indicePorConsumir: number;
+};
+
 /**
- * Crea un nuevo ciclo a partir de un evento de pago
+ * Crea un nuevo ciclo a partir de un evento de pago.
  */
 export const createPaymentCycle = (
   pagoId: string,
   clienteId: string,
   fechaDesde: string,
-  feriados: Holiday[] = []
+  feriados: Holiday[] = [],
+  diasCantidad = COMIDAS_POR_CICLO
 ): PaymentCycle => {
-  const diasHabiles = buildMealCalendar(fechaDesde, COMIDAS_POR_CICLO, feriados);
+  const diasHabiles = buildMealCalendar(fechaDesde, Math.max(1, diasCantidad), feriados);
   const fechaHasta = diasHabiles[diasHabiles.length - 1] || fechaDesde;
 
   return {
@@ -35,112 +42,140 @@ export const createPaymentCycle = (
     fechaHasta,
     diasHabiles,
     diasConsumidos: 0,
-    estado: 'futuro',
+    estado: "futuro",
     creadoEn: new Date().toISOString(),
   };
 };
 
 /**
- * Determina el estado de un ciclo relativo a hoy
+ * Determina el estado de un ciclo relativo a hoy.
  */
 export const determineCycleStatus = (
-  ciclo: PaymentCycle,
+  ciclo: Pick<PaymentCycle, "fechaDesde" | "fechaHasta">,
   today = getTodayString()
-): 'completado' | 'activo' | 'futuro' => {
+): "completado" | "activo" | "futuro" => {
   if (ciclo.fechaHasta < today) {
-    return 'completado';
+    return "completado";
   }
   if (ciclo.fechaDesde <= today && today <= ciclo.fechaHasta) {
-    return 'activo';
+    return "activo";
   }
-  return 'futuro';
+  return "futuro";
 };
 
 /**
- * Filtra y agrupa ciclos por estado
+ * Filtra y agrupa ciclos por estado relativo a hoy.
  */
 export const groupCyclesByStatus = (ciclos: PaymentCycle[], today = getTodayString()) => {
-  const actualizado = ciclos.map((c) => ({
-    ...c,
-    estado: determineCycleStatus(c, today),
-  }));
+  const ordenados = [...ciclos]
+    .sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde))
+    .map((c) => ({
+      ...c,
+      estado: determineCycleStatus(c, today),
+    }));
 
   return {
-    completados: actualizado.filter((c) => c.estado === 'completado'),
-    activos: actualizado.filter((c) => c.estado === 'activo'),
-    futuros: actualizado.filter((c) => c.estado === 'futuro'),
+    completados: ordenados.filter((c) => c.estado === "completado"),
+    activos: ordenados.filter((c) => c.estado === "activo"),
+    futuros: ordenados.filter((c) => c.estado === "futuro"),
   };
 };
 
 /**
- * Obtiene todos los días hábiles disponibles (no utilizados) de múltiples ciclos
+ * Obtiene los días hábiles pendientes (estrictamente posteriores a hoy) de todos los ciclos.
+ * Coherente con diasConsumidos (que cuenta los días <= hoy).
  */
-export const getAvailableDaysFromCycles = (ciclos: PaymentCycle[], today = getTodayString()): string[] => {
-  const resultado: string[] = [];
+export const getAvailableDaysFromCycles = (
+  ciclos: PaymentCycle[],
+  today = getTodayString()
+): string[] => {
   const conjunto = new Set<string>();
 
-  // Procesar ciclos en orden cronológico
   const ciclosOrdenados = [...ciclos].sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
-
   for (const ciclo of ciclosOrdenados) {
-    for (let i = ciclo.diasConsumidos; i < ciclo.diasHabiles.length; i++) {
-      const dia = ciclo.diasHabiles[i];
-
-      // Solo añadir si es hoy o después
-      if (dia >= today && !conjunto.has(dia)) {
-        resultado.push(dia);
+    for (const dia of ciclo.diasHabiles) {
+      if (dia > today) {
         conjunto.add(dia);
       }
     }
   }
 
-  return resultado.sort();
+  return Array.from(conjunto).sort();
 };
 
 /**
- * Obtiene todos los días hábiles de ciclos para renderizar en calendario
- * Incluye: días pasados, presentes y futuros
- * Cada día incluye metadatos sobre su estado
+ * Obtiene los días hábiles cubiertos desde hoy inclusive (hoy + futuros).
  */
-export const getCalendarDayStates = (ciclos: PaymentCycle[], today = getTodayString()) => {
-  const mapa = new Map<string, {
-    fecha: string;
-    estado: 'vencido' | 'disponible' | 'consumido' | 'futuro';
-    cicloId: string;
-    indicePorConsumir: number;
-  }>();
-
-  // Procesar ciclos ordenados por fecha
+export const getCoveredDaysFromToday = (
+  ciclos: PaymentCycle[],
+  today = getTodayString()
+): string[] => {
+  const conjunto = new Set<string>();
   const ciclosOrdenados = [...ciclos].sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
 
   for (const ciclo of ciclosOrdenados) {
+    for (const dia of ciclo.diasHabiles) {
+      if (dia >= today) {
+        conjunto.add(dia);
+      }
+    }
+  }
+
+  return Array.from(conjunto).sort();
+};
+
+/**
+ * Obtiene todos los días hábiles de ciclos para renderizar en calendario,
+ * incluyendo días hábiles vencidos sin cubrir después del último ciclo.
+ */
+export const getCalendarDayStates = (
+  ciclos: PaymentCycle[],
+  today = getTodayString(),
+  feriados: Holiday[] = []
+): Map<string, CalendarDayState> => {
+  const mapa = new Map<string, CalendarDayState>();
+
+  const ciclosOrdenados = [...ciclos].sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
+
+  for (const ciclo of ciclosOrdenados) {
+    const cycleStatus = determineCycleStatus(ciclo, today);
+
     for (let idx = 0; idx < ciclo.diasHabiles.length; idx++) {
       const dia = ciclo.diasHabiles[idx];
-      const yaExiste = mapa.has(dia);
+      if (mapa.has(dia)) continue;
 
-      if (!yaExiste) {
-        let estado: 'vencido' | 'disponible' | 'consumido' | 'futuro';
-
-        if (idx < ciclo.diasConsumidos) {
-          // Día ya utilizado
-          estado = 'consumido';
-        } else if (dia < today) {
-          // Día pasado pero no utilizado (vencido)
-          estado = 'vencido';
-        } else if (dia === today || dia > today) {
-          // Día actual o futuro, aún disponible
-          estado = 'disponible';
-        } else {
-          estado = 'vencido';
-        }
-
-        mapa.set(dia, {
-          fecha: dia,
-          estado,
-          cicloId: ciclo.id,
-          indicePorConsumir: idx,
-        });
+      let estado: CalendarDayState["estado"];
+      if (cycleStatus === "completado") {
+        estado = "consumido";
+      } else if (cycleStatus === "futuro") {
+        estado = "futuro";
+      } else {
+        estado = dia < today ? "consumido" : "disponible";
       }
+
+      mapa.set(dia, {
+        fecha: dia,
+        estado,
+        cicloId: ciclo.id,
+        indicePorConsumir: idx,
+      });
+    }
+  }
+
+  if (ciclosOrdenados.length > 0) {
+    const ultimoCiclo = ciclosOrdenados[ciclosOrdenados.length - 1];
+    if (ultimoCiclo.fechaHasta < today) {
+      const diasVencidos = listBusinessDaysBetween(ultimoCiclo.fechaHasta, today, feriados);
+      diasVencidos.forEach((dia, idx) => {
+        if (!mapa.has(dia)) {
+          mapa.set(dia, {
+            fecha: dia,
+            estado: "vencido",
+            cicloId: ultimoCiclo.id,
+            indicePorConsumir: idx,
+          });
+        }
+      });
     }
   }
 
@@ -148,29 +183,29 @@ export const getCalendarDayStates = (ciclos: PaymentCycle[], today = getTodayStr
 };
 
 /**
- * Cuenta los días hábiles disponibles (no consumidos, no pasados)
+ * Cuenta los días hábiles disponibles (posteriores a hoy).
  */
-export const countAvailableDays = (ciclos: PaymentCycle[], today = getTodayString()): number => {
-  return getAvailableDaysFromCycles(ciclos, today).length;
-};
+export const countAvailableDays = (ciclos: PaymentCycle[], today = getTodayString()): number =>
+  getAvailableDaysFromCycles(ciclos, today).length;
 
 /**
- * Cuenta los días hábiles consumidos de todos los ciclos
+ * Cuenta los días hábiles consumidos de todos los ciclos (calculado relativo a today).
  */
-export const countConsumedDays = (ciclos: PaymentCycle[]): number => {
-  return ciclos.reduce((sum, c) => sum + c.diasConsumidos, 0);
-};
+export const countConsumedDays = (ciclos: PaymentCycle[], today = getTodayString()): number =>
+  ciclos.reduce(
+    (sum, c) => sum + c.diasHabiles.filter((d) => d <= today).length,
+    0
+  );
 
 /**
- * Marca días como consumidos en un ciclo
- * Retorna el ciclo actualizado
+ * Marca días como consumidos en un ciclo.
  */
 export const consumeDaysFromCycle = (
   ciclo: PaymentCycle,
   cantidadDias: number
 ): PaymentCycle => {
-  const diasDisponibles = ciclo.diasHabiles.length - ciclo.diasConsumidos;
-  const nuevosConsumidos = Math.min(cantidadDias, diasDisponibles);
+  const diasDisponibles = Math.max(0, ciclo.diasHabiles.length - ciclo.diasConsumidos);
+  const nuevosConsumidos = Math.min(Math.max(0, cantidadDias), diasDisponibles);
 
   return {
     ...ciclo,
@@ -178,9 +213,6 @@ export const consumeDaysFromCycle = (
   };
 };
 
-/**
- * Obtiene el resumen total de días de un cliente considerando todos sus ciclos
- */
 export type CyclesSummary = {
   totalCiclos: number;
   ciclosCompletados: number;
@@ -189,23 +221,28 @@ export type CyclesSummary = {
   diasTotalHabiles: number;
   diasTotalConsumidos: number;
   diasTotalDisponibles: number;
+  finCicloActivo: string | null;
   proximoVencimiento: string | null;
 };
 
-export const summarizeCycles = (ciclos: PaymentCycle[], today = getTodayString()): CyclesSummary => {
+export const summarizeCycles = (
+  ciclos: PaymentCycle[],
+  today = getTodayString()
+): CyclesSummary => {
   const grouped = groupCyclesByStatus(ciclos, today);
   const disponibles = getAvailableDaysFromCycles(ciclos, today);
-  const consumidos = countConsumedDays(ciclos);
+  const consumidos = countConsumedDays(ciclos, today);
 
-  // Encontrar próximo vencimiento
-  let proximoVencimiento: string | null = null;
-  for (const ciclo of ciclos) {
-    if (ciclo.estado !== 'completado') {
-      if (!proximoVencimiento || ciclo.fechaHasta < proximoVencimiento) {
-        proximoVencimiento = ciclo.fechaHasta;
-      }
-    }
-  }
+  const finCicloActivo =
+    grouped.activos.length > 0 ? grouped.activos[0].fechaHasta : null;
+
+  const vigentesOFuturos = [...grouped.activos, ...grouped.futuros].sort((a, b) =>
+    a.fechaHasta.localeCompare(b.fechaHasta)
+  );
+  const proximoVencimiento =
+    vigentesOFuturos.length > 0
+      ? vigentesOFuturos[vigentesOFuturos.length - 1].fechaHasta
+      : null;
 
   return {
     totalCiclos: ciclos.length,
@@ -215,53 +252,149 @@ export const summarizeCycles = (ciclos: PaymentCycle[], today = getTodayString()
     diasTotalHabiles: ciclos.reduce((sum, c) => sum + c.diasHabiles.length, 0),
     diasTotalConsumidos: consumidos,
     diasTotalDisponibles: disponibles.length,
+    finCicloActivo,
     proximoVencimiento,
   };
 };
 
 /**
- * Genera ciclos para todos los pagos de un cliente
- * Sincroniza ciclos con eventos de pago
+ * Genera y sincroniza ciclos para todos los pagos de un cliente
+ * de forma ordenada y encadenada, aplicando ajustes extra al último ciclo.
  */
 export const syncCyclesWithPayments = (
   clienteId: string,
   pagos: ClientEvent[],
   ciclosExistentes: PaymentCycle[],
-  feriados: Holiday[] = []
+  feriados: Holiday[] = [],
+  today = getTodayString(),
+  extraDaysLastCycle = 0
 ): PaymentCycle[] => {
-  // Extraer IDs de pagos que ya tienen ciclos
-  const pagoIdsConCiclo = new Set(ciclosExistentes.map((c) => c.pagoId));
+  const pagosCliente = pagos
+    .filter(
+      (pago) =>
+        pago.clienteId === clienteId &&
+        pago.tipo === "pago" &&
+        isValidIsoDateString(pago.fecha)
+    )
+    .sort((a, b) => {
+      const dateDiff = a.fecha.localeCompare(b.fecha);
+      return dateDiff !== 0 ? dateDiff : a.id.localeCompare(b.id);
+    });
 
-  // Crear ciclos para pagos nuevos
-  const ciclosNuevos = pagos
-    .filter((pago) => !pagoIdsConCiclo.has(pago.id))
-    .map((pago) => createPaymentCycle(pago.id, clienteId, pago.fecha, feriados));
+  if (pagosCliente.length === 0) {
+    return [];
+  }
 
-  // Combinar y retornar
-  return [...ciclosExistentes, ...ciclosNuevos];
+  const ciclosMap = new Map(
+    ciclosExistentes
+      .filter((c) => c.clienteId === clienteId)
+      .map((c) => [c.pagoId, c])
+  );
+
+  const ciclosGenerados: PaymentCycle[] = [];
+
+  for (let i = 0; i < pagosCliente.length; i++) {
+    const pago = pagosCliente[i];
+    const cicloPrevio = i > 0 ? ciclosGenerados[i - 1] : null;
+    const isLast = i === pagosCliente.length - 1;
+    const cycleLength = isLast
+      ? Math.max(1, COMIDAS_POR_CICLO + extraDaysLastCycle)
+      : COMIDAS_POR_CICLO;
+
+    let fechaDesde: string;
+    if (cicloPrevio && pago.fecha <= cicloPrevio.fechaHasta) {
+      fechaDesde = getNextBusinessDay(cicloPrevio.fechaHasta, feriados);
+    } else {
+      fechaDesde = normalizeBusinessDay(pago.fecha, feriados);
+    }
+
+    const diasHabiles = buildMealCalendar(fechaDesde, cycleLength, feriados);
+    const fechaHasta = diasHabiles[diasHabiles.length - 1] || fechaDesde;
+
+    let diasConsumidos = 0;
+    if (fechaHasta < today) {
+      diasConsumidos = diasHabiles.length;
+    } else if (fechaDesde <= today && today <= fechaHasta) {
+      diasConsumidos = diasHabiles.filter((d) => d <= today).length;
+    }
+
+    const estado = determineCycleStatus({ fechaDesde, fechaHasta }, today);
+    const cicloExistente = ciclosMap.get(pago.id);
+
+    ciclosGenerados.push({
+      id: cicloExistente?.id || createId(),
+      clienteId,
+      pagoId: pago.id,
+      fechaDesde,
+      fechaHasta,
+      diasHabiles,
+      diasConsumidos,
+      estado,
+      creadoEn: cicloExistente?.creadoEn || new Date().toISOString(),
+    });
+  }
+
+  return ciclosGenerados;
 };
 
 /**
- * Valida que los ciclos sean coherentes (sin solapamientos problemáticos)
- * Retorna errores si los encuentra
+ * Construye los períodos persistidos a partir de los ciclos encadenados para que
+ * Estadísticas, Cobros y Respaldo nunca diverjan.
+ */
+export const buildPeriodsFromCycles = (
+  clienteId: string,
+  ciclos: PaymentCycle[],
+  feriados: Holiday[] = []
+): Period[] => {
+  const ordenados = [...ciclos]
+    .filter((c) => c.clienteId === clienteId)
+    .sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
+
+  if (ordenados.length === 0) return [];
+
+  const periodos: Period[] = ordenados.map((ciclo) => ({
+    id: `period-${ciclo.id}`,
+    clienteId,
+    tipo: "periodo",
+    estado: "pagado",
+    inicio: ciclo.fechaDesde,
+    fin: ciclo.fechaHasta,
+    pagoId: ciclo.pagoId,
+    detalle: "Período pagado",
+  }));
+
+  const ultimo = ordenados[ordenados.length - 1];
+  const siguienteInicio = getNextBusinessDay(ultimo.fechaHasta, feriados);
+  const diasProyectados = buildMealCalendar(siguienteInicio, COMIDAS_POR_CICLO, feriados);
+  const siguienteFin = diasProyectados[diasProyectados.length - 1] ?? siguienteInicio;
+
+  periodos.push({
+    id: `period-next-${ultimo.id}`,
+    clienteId,
+    tipo: "periodo",
+    estado: "impago",
+    inicio: siguienteInicio,
+    fin: siguienteFin,
+    detalle: "Período pendiente",
+  });
+
+  return periodos;
+};
+
+/**
+ * Valida que los ciclos sean coherentes.
  */
 export const validateCycles = (ciclos: PaymentCycle[]): string[] => {
   const errores: string[] = [];
-
   if (ciclos.length === 0) return errores;
 
-  // Verificar que cada ciclo tenga exactamente 20 días hábiles
   for (const ciclo of ciclos) {
-    if (ciclo.diasHabiles.length !== COMIDAS_POR_CICLO) {
-      errores.push(`Ciclo ${ciclo.id} tiene ${ciclo.diasHabiles.length} días, esperaba ${COMIDAS_POR_CICLO}`);
+    if (ciclo.diasHabiles.length < 1) {
+      errores.push(`Ciclo ${ciclo.id} no tiene días hábiles`);
     }
-
-    // Verificar que diasConsumidos no exceda el total
     if (ciclo.diasConsumidos > ciclo.diasHabiles.length) {
       errores.push(`Ciclo ${ciclo.id}: diasConsumidos (${ciclo.diasConsumidos}) excede el total`);
     }
-
-    // Verificar que fechaDesde y fechaHasta sean consistentes
     if (ciclo.diasHabiles[0] !== ciclo.fechaDesde) {
       errores.push(`Ciclo ${ciclo.id}: fechaDesde inconsistente`);
     }

@@ -1,16 +1,35 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
-import { FAB, Menu, Snackbar, Text, useTheme } from "react-native-paper";
-import { useFocusEffect } from "@react-navigation/native";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { FAB, Searchbar, Snackbar, Surface, Text, useTheme } from "react-native-paper";
+import { RouteProp, useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { format } from "date-fns";
+import {
+  Calculator,
+  Layers,
+  Pencil,
+  Plus,
+  Receipt,
+  Trash2,
+  Wallet,
+} from "lucide-react-native";
 
 import { useStore } from "../../store/zustand";
-import { ExpenseCategory, ExpenseRecord } from "../../types/types";
+import type {
+  ExpenseCategory,
+  ExpenseRecord,
+  MisGastosStackParamList,
+} from "../../types/types";
 import {
   CONTENT_MAX_WIDTH,
   getFabBottomOffset,
   getFontSize,
-  getLineHeight,
   getSpacing,
 } from "../../theme/layout";
 import CategoryDialog from "./components/CategoryDialog";
@@ -20,31 +39,44 @@ import ExpensesPanel from "./components/ExpensesPanel";
 import FilterSummaryCard from "./components/FilterSummaryCard";
 import {
   buildId,
+  formatCurrency,
   getInitialCategoryForm,
   getInitialExpenseForm,
+  iconMap,
   isExpenseInFilter,
+  parseAmountInput,
   parseExpenseDate,
   type CategoryFormState,
   type ExpenseFormState,
   type FilterMode,
 } from "./misGastosShared";
 
+type GastosRouteProp = RouteProp<MisGastosStackParamList, "Gastos">;
+type GastosNavProp = NativeStackNavigationProp<MisGastosStackParamList, "Gastos">;
+
 export default function GastosScreen() {
+  const navigation = useNavigation<GastosNavProp>();
+  const route = useRoute<GastosRouteProp>();
+
   const setMisGastosUbi = useStore((state) => state.setMisGastosUbi);
   const categories = useStore((state) => state.misGastosCategories);
   const expenses = useStore((state) => state.misGastosExpenses);
-  const persistMisGastosCategories = useStore((state) => state.persistMisGastosCategories);
-  const persistMisGastosExpenses = useStore((state) => state.persistMisGastosExpenses);
+  const saveMisGastosCategory = useStore((state) => state.saveMisGastosCategory);
+  const deleteMisGastosCategory = useStore((state) => state.deleteMisGastosCategory);
+  const saveMisGastosExpense = useStore((state) => state.saveMisGastosExpense);
+  const deleteMisGastosExpense = useStore((state) => state.deleteMisGastosExpense);
+
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const spacing = getSpacing(width);
   const fabBottomOffset = getFabBottomOffset();
   const titleSize = getFontSize(width, 24);
-  const bodySize = getFontSize(width, 16);
+  const bodySize = getFontSize(width, 15);
 
   const [filterMode, setFilterMode] = useState<FilterMode>("mes");
   const [referenceDate, setReferenceDate] = useState(new Date());
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [categoryDialogVisible, setCategoryDialogVisible] = useState(false);
   const [expenseDialogVisible, setExpenseDialogVisible] = useState(false);
   const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
@@ -54,19 +86,41 @@ export default function GastosScreen() {
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
   const [fabOpen, setFabOpen] = useState(false);
-  const [categoryMenuVisible, setCategoryMenuVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       setMisGastosUbi("Gastos");
-    }, [setMisGastosUbi])
+      const params = route.params;
+      if (!params) return;
+
+      if (params.categoriaId !== undefined) {
+        setSelectedCategoryId(params.categoriaId);
+      }
+      if (params.filterMode) {
+        setFilterMode(params.filterMode);
+      }
+      if (params.referenceDateIso) {
+        const parsed = new Date(params.referenceDateIso);
+        if (!Number.isNaN(parsed.getTime())) {
+          setReferenceDate(parsed);
+        }
+      }
+
+      navigation.setParams({
+        categoriaId: undefined,
+        filterMode: undefined,
+        referenceDateIso: undefined,
+      });
+    }, [navigation, route.params, setMisGastosUbi])
   );
 
   useEffect(() => {
-    if (selectedCategoryId && categories.some((category) => category.id === selectedCategoryId)) {
-      return;
+    if (
+      selectedCategoryId !== null &&
+      !categories.some((category) => category.id === selectedCategoryId)
+    ) {
+      setSelectedCategoryId(null);
     }
-    setSelectedCategoryId(categories[0]?.id ?? null);
   }, [categories, selectedCategoryId]);
 
   const showMessage = (message: string) => {
@@ -74,18 +128,18 @@ export default function GastosScreen() {
     setSnackbarVisible(true);
   };
 
-  const persistCategories = async (nextCategories: ExpenseCategory[]) => {
-    await persistMisGastosCategories(nextCategories);
-  };
-
-  const persistExpenses = async (nextExpenses: ExpenseRecord[]) => {
-    await persistMisGastosExpenses(nextExpenses);
-  };
+  const categoryNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    categories.forEach((cat) => map.set(cat.id, cat.nombre.toLowerCase()));
+    return map;
+  }, [categories]);
 
   const selectedCategory = useMemo(
-    () => categories.find((category) => category.id === selectedCategoryId) ?? null,
+    () => (selectedCategoryId ? categories.find((c) => c.id === selectedCategoryId) ?? null : null),
     [categories, selectedCategoryId]
   );
+
+  const normalizedSearch = searchQuery.trim().toLowerCase();
 
   const filteredExpenses = useMemo(
     () =>
@@ -93,12 +147,28 @@ export default function GastosScreen() {
         .filter((expense) => {
           if (selectedCategory && expense.categoriaId !== selectedCategory.id) return false;
           const expenseDate = new Date(expense.fecha);
-          return !Number.isNaN(expenseDate.getTime())
-            ? isExpenseInFilter(expenseDate, filterMode, referenceDate)
-            : false;
+          if (Number.isNaN(expenseDate.getTime())) return false;
+          if (!isExpenseInFilter(expenseDate, filterMode, referenceDate)) return false;
+
+          if (normalizedSearch.length > 0) {
+            const ref = (expense.referencia ?? "").toLowerCase();
+            const catName = categoryNameMap.get(expense.categoriaId) ?? "";
+            if (!ref.includes(normalizedSearch) && !catName.includes(normalizedSearch)) {
+              return false;
+            }
+          }
+
+          return true;
         })
         .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()),
-    [expenses, filterMode, referenceDate, selectedCategory]
+    [
+      categoryNameMap,
+      expenses,
+      filterMode,
+      normalizedSearch,
+      referenceDate,
+      selectedCategory,
+    ]
   );
 
   const totalFiltered = useMemo(
@@ -106,22 +176,14 @@ export default function GastosScreen() {
     [filteredExpenses]
   );
 
+  const averageExpense = useMemo(
+    () => (filteredExpenses.length > 0 ? totalFiltered / filteredExpenses.length : 0),
+    [filteredExpenses.length, totalFiltered]
+  );
+
   const saveCategory = async () => {
     const nombre = categoryForm.nombre.trim();
-    if (!nombre) {
-      showMessage("Ingresá un nombre para la categoría.");
-      return;
-    }
-    if (
-      categories.some(
-        (category) =>
-          category.id !== categoryForm.id &&
-          category.nombre.toLowerCase() === nombre.toLowerCase()
-      )
-    ) {
-      showMessage("Ya existe una categoría con ese nombre.");
-      return;
-    }
+    if (!nombre) return;
 
     const nowIso = new Date().toISOString();
     const newCategory: ExpenseCategory = {
@@ -134,11 +196,7 @@ export default function GastosScreen() {
         : nowIso,
     };
 
-    const updatedCategories = categoryForm.id
-      ? categories.map((category) => (category.id === categoryForm.id ? newCategory : category))
-      : [...categories, newCategory];
-
-    await persistCategories(updatedCategories);
+    await saveMisGastosCategory(newCategory);
     setCategoryDialogVisible(false);
     setFabOpen(false);
     setSelectedCategoryId(newCategory.id);
@@ -146,21 +204,9 @@ export default function GastosScreen() {
   };
 
   const saveExpense = async () => {
-    const monto = Number(expenseForm.monto);
-    if (Number.isNaN(monto) || monto <= 0) {
-      showMessage("Ingresá un monto válido.");
-      return;
-    }
-    if (!expenseForm.categoriaId) {
-      showMessage("Elegí una categoría.");
-      return;
-    }
-
+    const monto = parseAmountInput(expenseForm.monto);
     const expenseDate = parseExpenseDate(expenseForm.fecha, expenseForm.hora);
-    if (!expenseDate) {
-      showMessage("Ingresá una fecha y hora válidas.");
-      return;
-    }
+    if (monto === null || !expenseForm.categoriaId || !expenseDate) return;
 
     const nowIso = new Date().toISOString();
     const newExpense: ExpenseRecord = {
@@ -175,284 +221,338 @@ export default function GastosScreen() {
       actualizadoEn: nowIso,
     };
 
-    const updatedExpenses = expenseForm.id
-      ? expenses.map((expense) => (expense.id === expenseForm.id ? newExpense : expense))
-      : [...expenses, newExpense];
-
-    await persistExpenses(updatedExpenses);
+    await saveMisGastosExpense(newExpense);
     setExpenseDialogVisible(false);
     setFabOpen(false);
-    showMessage(expenseForm.id ? "Gasto actualizado." : "Gasto guardado.");
+    const insideFilter = isExpenseInFilter(expenseDate, filterMode, referenceDate);
+    if (expenseForm.id) {
+      showMessage("Gasto actualizado.");
+    } else {
+      showMessage(
+        insideFilter
+          ? "Gasto guardado."
+          : "Gasto guardado (corresponde a otro período de filtro)."
+      );
+    }
   };
 
   const deleteCategory = async () => {
     if (!deleteCategoryId) return;
-
-    const updatedCategories = categories.filter((category) => category.id !== deleteCategoryId);
-    const updatedExpenses = expenses.filter((expense) => expense.categoriaId !== deleteCategoryId);
-
-    await persistCategories(updatedCategories);
-    await persistExpenses(updatedExpenses);
+    await deleteMisGastosCategory(deleteCategoryId);
     setDeleteCategoryId(null);
-    setSelectedCategoryId(updatedCategories[0]?.id ?? null);
-    showMessage("Categoria eliminada.");
+    setSelectedCategoryId(null);
+    showMessage("Categoría eliminada.");
   };
 
   const deleteExpense = async () => {
     if (!deleteExpenseId) return;
-
-    const updatedExpenses = expenses.filter((expense) => expense.id !== deleteExpenseId);
-    await persistExpenses(updatedExpenses);
+    await deleteMisGastosExpense(deleteExpenseId);
     setDeleteExpenseId(null);
     showMessage("Gasto eliminado.");
   };
 
-  const styles = useMemo(
-    () =>
-      StyleSheet.create({
-        container: {
-          flex: 1,
-          backgroundColor: theme.colors.background,
-        },
-        scroll: {
-          padding: spacing,
-          paddingBottom: 180,
-        },
-        content: {
-          width: "100%",
-          maxWidth: CONTENT_MAX_WIDTH,
-          alignSelf: "center",
-          gap: spacing,
-        },
-        title: {
-          fontSize: titleSize,
-          fontWeight: "700",
-          color: theme.colors.onSurface,
-        },
-        subtitle: {
-          marginTop: 6,
-          fontSize: bodySize,
-          lineHeight: getLineHeight(bodySize),
-          color: theme.colors.onSurfaceVariant,
-        },
-        card: {
-          borderRadius: 22,
-          padding: spacing,
-          backgroundColor: theme.colors.surface,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
-          gap: 12,
-        },
-        selectorCard: {
-          borderRadius: 22,
-          padding: spacing,
-          backgroundColor: theme.colors.surface,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
-          gap: 12,
-        },
-        selectorRow: {
-          flexDirection: width >= 720 ? "row" : "column",
-          gap: 10,
-          alignItems: width >= 720 ? "center" : "stretch",
-          justifyContent: "space-between",
-        },
-        filterRow: {
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          backgroundColor: "transparent",
-        },
-        periodPill: {
-          flex: 1,
-          borderRadius: 18,
-          paddingVertical: 10,
-          paddingHorizontal: 12,
-          backgroundColor: theme.colors.surfaceVariant,
-          borderWidth: 1,
-          borderColor: theme.colors.outline,
-        },
-        selectorBody: {
-          flex: 1,
-          gap: 8,
-        },
-        selectorLabel: {
-          color: theme.colors.onSurfaceVariant,
-          fontSize: getFontSize(width, 13),
-          fontWeight: "600",
-          textTransform: "uppercase",
-          letterSpacing: 0.8,
-        },
-        selectorButton: {
-          borderRadius: 16,
-          paddingVertical: 4,
-        },
-        selectorActions: {
-          flexDirection: "row",
-          gap: 8,
-          flexWrap: "wrap",
-        },
-        emptyState: {
-          borderRadius: 18,
-          borderWidth: 1,
-          borderStyle: "dashed",
-          borderColor: theme.colors.outline,
-          padding: spacing,
-          gap: 8,
-        },
-        fabGroup: {
-          position: "absolute",
-          right: spacing,
-          bottom: fabBottomOffset,
-        },
-      }),
-    [
-      bodySize,
-      fabBottomOffset,
-      spacing,
-      theme.colors.background,
-      theme.colors.onSurface,
-      theme.colors.onSurfaceVariant,
-      theme.colors.outline,
-      theme.colors.surface,
-      theme.colors.surfaceVariant,
-      titleSize,
-      width,
-    ]
-  );
+  const openNewExpenseDialog = () => {
+    setFabOpen(false);
+    if (categories.length === 0) {
+      showMessage("Primero creá una categoría.");
+      setCategoryForm(getInitialCategoryForm());
+      setCategoryDialogVisible(true);
+      return;
+    }
+    const defaultCatId = selectedCategory?.id ?? categories[0]?.id;
+    setExpenseForm(getInitialExpenseForm(defaultCatId));
+    setExpenseDialogVisible(true);
+  };
+
+  const renderCategoryIcon = (iconName?: string, color?: string) => {
+    const IconComponent = iconName ? iconMap[iconName] ?? Wallet : Wallet;
+    return <IconComponent color={color ?? theme.colors.primary} size={16} strokeWidth={2.2} />;
+  };
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { padding: spacing }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.content}>
-          <Text style={styles.title}>Gastos</Text>
-          <Text style={styles.subtitle}>
-            Elegí una categoría para revisar su detalle y filtrá por período según necesites.
-          </Text>
-
-          <View style={styles.selectorCard}>
-            <View style={styles.selectorRow}>
-              <View style={styles.selectorBody}>
-                <Text style={styles.selectorLabel}>Categoria a revisar</Text>
-                <Menu
-                  visible={categoryMenuVisible}
-                  onDismiss={() => setCategoryMenuVisible(false)}
-                  anchor={
-                    <FAB
-                      icon="chevron-down"
-                      label={selectedCategory?.nombre ?? "Seleccionar categoría"}
-                      style={styles.selectorButton}
-                      onPress={() => setCategoryMenuVisible(true)}
-                    />
-                  }
-                >
-                  {categories.length === 0 ? (
-                    <Menu.Item title="No hay categorías aún" disabled />
-                  ) : (
-                    categories.map((category) => (
-                      <Menu.Item
-                        key={category.id}
-                        title={category.nombre}
-                        leadingIcon={selectedCategoryId === category.id ? "check" : undefined}
-                        onPress={() => {
-                          setSelectedCategoryId(category.id);
-                          setCategoryMenuVisible(false);
-                        }}
-                      />
-                    ))
-                  )}
-                </Menu>
+          <View style={styles.pageHeader}>
+            <View style={styles.pageHeaderTop}>
+              <View
+                style={[
+                  styles.titleIconBadge,
+                  { backgroundColor: `${theme.colors.primary}18` },
+                ]}
+              >
+                <Receipt color={theme.colors.primary} size={22} strokeWidth={2.2} />
               </View>
-
-              <View style={styles.selectorActions}>
-                <FAB
-                  icon="pencil-outline"
-                  label="Editar"
-                  disabled={!selectedCategory}
-                  onPress={() => {
-                    if (!selectedCategory) return;
-                    setCategoryForm({
-                      id: selectedCategory.id,
-                      nombre: selectedCategory.nombre,
-                      icono: selectedCategory.icono,
-                      color: selectedCategory.color,
-                    });
-                    setCategoryDialogVisible(true);
-                  }}
-                />
-                <FAB
-                  icon="delete-outline"
-                  label="Eliminar"
-                  disabled={!selectedCategory}
-                  onPress={() => {
-                    if (!selectedCategory) return;
-                    setDeleteCategoryId(selectedCategory.id);
-                  }}
-                />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.title, { color: theme.colors.onSurface, fontSize: titleSize }]}>
+                  Registro de Gastos
+                </Text>
+                <Text
+                  style={[
+                    styles.subtitle,
+                    { color: theme.colors.onSurfaceVariant, fontSize: bodySize },
+                  ]}
+                >
+                  Filtrá por categoría o período y gestioná tus consumos
+                </Text>
               </View>
             </View>
           </View>
 
-          {!selectedCategory ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.title}>No hay categoría seleccionada</Text>
-              <Text style={styles.subtitle}>
-                Creá una categoría desde el FAB y luego elegila para ver su detalle.
+          <Searchbar
+            placeholder="Buscar por descripción o categoría..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            style={[
+              styles.searchbar,
+              {
+                backgroundColor: theme.colors.surface,
+                borderColor: theme.colors.outline,
+              },
+            ]}
+            elevation={0}
+          />
+
+          <Surface
+            style={[
+              styles.categoryBarCard,
+              {
+                backgroundColor: theme.colors.surface,
+                borderColor: theme.colors.outline,
+              },
+            ]}
+            elevation={0}
+          >
+            <View style={styles.categoryBarHeader}>
+              <Text style={[styles.categoryBarTitle, { color: theme.colors.onSurfaceVariant }]}>
+                Filtrar por categoría
               </Text>
+              {selectedCategory ? (
+                <View style={styles.categoryActionsInline}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.categoryMiniAction,
+                      {
+                        backgroundColor: `${theme.colors.primary}15`,
+                        opacity: pressed ? 0.7 : 1,
+                      },
+                    ]}
+                    onPress={() => {
+                      setCategoryForm({
+                        id: selectedCategory.id,
+                        nombre: selectedCategory.nombre,
+                        icono: selectedCategory.icono,
+                        color: selectedCategory.color,
+                      });
+                      setCategoryDialogVisible(true);
+                    }}
+                  >
+                    <Pencil size={13} color={theme.colors.primary} strokeWidth={2.4} />
+                    <Text style={[styles.categoryMiniActionText, { color: theme.colors.primary }]}>
+                      Editar
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.categoryMiniAction,
+                      {
+                        backgroundColor: `${theme.colors.error}15`,
+                        opacity: pressed ? 0.7 : 1,
+                      },
+                    ]}
+                    onPress={() => setDeleteCategoryId(selectedCategory.id)}
+                  >
+                    <Trash2 size={13} color={theme.colors.error} strokeWidth={2.4} />
+                    <Text style={[styles.categoryMiniActionText, { color: theme.colors.error }]}>
+                      Eliminar
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
-          ) : (
-            <FilterSummaryCard
-              cardStyle={styles.card}
-              titleStyle={styles.title}
-              bodyStyle={styles.subtitle}
-              amountStyle={styles.title}
-              filterRowStyle={styles.filterRow}
-              filterLabelStyle={styles.subtitle}
-              periodPillStyle={styles.periodPill}
-              filterMode={filterMode}
-              referenceDate={referenceDate}
-              total={totalFiltered}
-              selectedCategoryName={selectedCategory.nombre}
-              onChangeFilter={setFilterMode}
-              onChangeReferenceDate={setReferenceDate}
-            />
-          )}
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryScroll}
+            >
+              <Pressable
+                style={({ pressed }) => [
+                  styles.categoryPill,
+                  selectedCategoryId === null
+                    ? {
+                        backgroundColor: theme.colors.primary,
+                        borderColor: theme.colors.primary,
+                      }
+                    : {
+                        backgroundColor: theme.colors.surfaceVariant,
+                        borderColor: theme.colors.outline,
+                      },
+                  pressed && { opacity: 0.8 },
+                ]}
+                onPress={() => setSelectedCategoryId(null)}
+              >
+                <Layers
+                  size={15}
+                  color={
+                    selectedCategoryId === null
+                      ? theme.colors.onPrimary
+                      : theme.colors.onSurfaceVariant
+                  }
+                  strokeWidth={2.3}
+                />
+                <Text
+                  style={[
+                    styles.categoryPillLabel,
+                    {
+                      color:
+                        selectedCategoryId === null
+                          ? theme.colors.onPrimary
+                          : theme.colors.onSurface,
+                    },
+                  ]}
+                >
+                  Todas ({categories.length})
+                </Text>
+              </Pressable>
+
+              {categories.map((cat) => {
+                const isSelected = selectedCategoryId === cat.id;
+                const catColor = cat.color ?? theme.colors.primary;
+                return (
+                  <Pressable
+                    key={cat.id}
+                    style={({ pressed }) => [
+                      styles.categoryPill,
+                      isSelected
+                        ? {
+                            backgroundColor: `${catColor}20`,
+                            borderColor: catColor,
+                          }
+                        : {
+                            backgroundColor: theme.colors.surfaceVariant,
+                            borderColor: theme.colors.outline,
+                          },
+                      pressed && { opacity: 0.8 },
+                    ]}
+                    onPress={() => setSelectedCategoryId(cat.id)}
+                  >
+                    <View style={[styles.catPillDot, { backgroundColor: catColor }]} />
+                    {renderCategoryIcon(cat.icono, catColor)}
+                    <Text
+                      style={[
+                        styles.categoryPillLabel,
+                        {
+                          color: isSelected ? catColor : theme.colors.onSurface,
+                          fontWeight: isSelected ? "700" : "600",
+                        },
+                      ]}
+                    >
+                      {cat.nombre}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.categoryPillAdd,
+                  {
+                    borderColor: theme.colors.outline,
+                    backgroundColor: "transparent",
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
+                onPress={() => {
+                  setCategoryForm(getInitialCategoryForm());
+                  setCategoryDialogVisible(true);
+                }}
+              >
+                <Plus size={14} color={theme.colors.primary} strokeWidth={2.5} />
+                <Text style={[styles.categoryPillAddText, { color: theme.colors.primary }]}>
+                  Nueva
+                </Text>
+              </Pressable>
+            </ScrollView>
+          </Surface>
+
+          <FilterSummaryCard
+            filterMode={filterMode}
+            referenceDate={referenceDate}
+            total={totalFiltered}
+            expenseCount={filteredExpenses.length}
+            selectedCategoryName={selectedCategory?.nombre}
+            onChangeFilter={setFilterMode}
+            onChangeReferenceDate={setReferenceDate}
+          />
+
+          {filteredExpenses.length > 0 ? (
+            <View style={styles.metricsRow}>
+              <Surface
+                style={[
+                  styles.metricCard,
+                  {
+                    backgroundColor: theme.colors.surface,
+                    borderColor: theme.colors.outline,
+                  },
+                ]}
+                elevation={0}
+              >
+                <View style={styles.metricTop}>
+                  <Calculator size={15} color={theme.colors.primary} strokeWidth={2.2} />
+                  <Text style={[styles.metricLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Promedio
+                  </Text>
+                </View>
+                <Text style={[styles.metricValue, { color: theme.colors.onSurface }]}>
+                  {formatCurrency(averageExpense)}
+                </Text>
+              </Surface>
+
+              <Surface
+                style={[
+                  styles.metricCard,
+                  {
+                    backgroundColor: theme.colors.surface,
+                    borderColor: theme.colors.outline,
+                  },
+                ]}
+                elevation={0}
+              >
+                <View style={styles.metricTop}>
+                  <Receipt size={15} color={theme.colors.secondary} strokeWidth={2.2} />
+                  <Text style={[styles.metricLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Operaciones
+                  </Text>
+                </View>
+                <Text style={[styles.metricValue, { color: theme.colors.onSurface }]}>
+                  {filteredExpenses.length}{" "}
+                  {filteredExpenses.length === 1 ? "gasto" : "gastos"}
+                </Text>
+              </Surface>
+            </View>
+          ) : null}
 
           <ExpensesPanel
-            cardStyle={styles.card}
-            titleStyle={styles.title}
-            bodyStyle={styles.subtitle}
-            emptyStateStyle={styles.emptyState}
-            expenseRowStyle={{
-              borderRadius: 16,
-              borderWidth: 1,
-              borderColor: theme.colors.outline,
-              padding: 14,
-              gap: 10,
-            }}
-            expenseTopStyle={styles.selectorRow}
-            expenseTitleStyle={styles.title}
-            expenseMetaStyle={styles.subtitle}
-            inlineRowStyle={styles.selectorActions}
             selectedCategoryName={selectedCategory?.nombre}
+            selectedCategoryId={selectedCategoryId}
+            categories={categories}
             expenses={filteredExpenses}
-            onAdd={() => {
-              if (!selectedCategory) {
-                showMessage("Primero creá o seleccioná una categoría.");
-                return;
-              }
-              setExpenseForm(getInitialExpenseForm(selectedCategory.id));
-              setExpenseDialogVisible(true);
-            }}
+            hasSearchFilter={normalizedSearch.length > 0}
+            onAdd={openNewExpenseDialog}
             onEdit={(expense) => {
               const expenseDate = new Date(expense.fecha);
+              const safeDate = Number.isNaN(expenseDate.getTime()) ? new Date() : expenseDate;
               setExpenseForm({
                 id: expense.id,
                 categoriaId: expense.categoriaId,
-                monto: expense.monto.toString(),
-                fecha: format(expenseDate, "dd/MM/yyyy"),
-                hora: format(expenseDate, "HH:mm"),
+                monto: String(expense.monto).replace(".", ","),
+                fecha: format(safeDate, "dd/MM/yyyy"),
+                hora: format(safeDate, "HH:mm"),
                 referencia: expense.referencia ?? "",
               });
               setExpenseDialogVisible(true);
@@ -467,49 +567,34 @@ export default function GastosScreen() {
         visible
         icon={fabOpen ? "close" : "plus"}
         color={theme.colors.onSecondary}
-        fabStyle={{ backgroundColor: theme.colors.secondary }}
+        fabStyle={{
+          backgroundColor: theme.colors.secondary,
+          borderRadius: 18,
+        }}
         actions={[
           {
             icon: "cash-plus",
             label: "Nuevo gasto",
-            onPress: () => {
-              if (!selectedCategory) {
-                showMessage("Primero crea o selecciona una categoria.");
-                return;
-              }
-              setExpenseForm(getInitialExpenseForm(selectedCategory.id));
-              setExpenseDialogVisible(true);
-              setFabOpen(false);
-            },
+            onPress: openNewExpenseDialog,
           },
           {
             icon: "tag-plus-outline",
             label: "Nueva categoría",
             onPress: () => {
+              setFabOpen(false);
               setCategoryForm(getInitialCategoryForm());
               setCategoryDialogVisible(true);
-              setFabOpen(false);
             },
           },
         ]}
         onStateChange={({ open }) => setFabOpen(open)}
-        style={styles.fabGroup}
+        style={[styles.fabGroup, { bottom: fabBottomOffset, right: spacing }]}
       />
 
       <CategoryDialog
         visible={categoryDialogVisible}
         form={categoryForm}
-        sectionTitleStyle={styles.title}
-        iconGridStyle={styles.selectorActions}
-        iconButtonWrapStyle={{
-          width: 46,
-          height: 46,
-          borderRadius: 14,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-        colorRowStyle={styles.selectorActions}
-        colorDotStyle={{ width: 34, height: 34, borderRadius: 17, borderWidth: 2 }}
+        existingCategories={categories}
         onDismiss={() => setCategoryDialogVisible(false)}
         onChange={setCategoryForm}
         onSave={saveCategory}
@@ -519,7 +604,6 @@ export default function GastosScreen() {
         visible={expenseDialogVisible}
         categories={categories}
         form={expenseForm}
-        categoriesWrapStyle={styles.selectorActions}
         onDismiss={() => setExpenseDialogVisible(false)}
         onChange={setExpenseForm}
         onSave={saveExpense}
@@ -528,7 +612,7 @@ export default function GastosScreen() {
       <ConfirmDeleteDialog
         visible={Boolean(deleteCategoryId)}
         title="Eliminar categoría"
-        message="También se eliminarán todos los gastos asociados."
+        message="También se eliminarán todos los gastos asociados a esta categoría."
         onDismiss={() => setDeleteCategoryId(null)}
         onConfirm={deleteCategory}
       />
@@ -551,3 +635,148 @@ export default function GastosScreen() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  scroll: {
+    paddingBottom: 160,
+  },
+  content: {
+    width: "100%",
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    gap: 14,
+  },
+  pageHeader: {
+    gap: 4,
+    marginBottom: 4,
+  },
+  pageHeaderTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  titleIconBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  searchbar: {
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  categoryBarCard: {
+    borderRadius: 22,
+    padding: 14,
+    borderWidth: 1,
+    gap: 10,
+  },
+  categoryBarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  categoryBarTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  categoryActionsInline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  categoryMiniAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  categoryMiniActionText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  categoryScroll: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 2,
+  },
+  categoryPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  catPillDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  categoryPillLabel: {
+    fontSize: 13,
+    letterSpacing: -0.1,
+  },
+  categoryPillAdd: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderStyle: "dashed",
+  },
+  categoryPillAddText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  metricsRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  metricCard: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 6,
+  },
+  metricTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  metricLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  metricValue: {
+    fontSize: 17,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+  },
+  fabGroup: {
+    position: "absolute",
+  },
+});
